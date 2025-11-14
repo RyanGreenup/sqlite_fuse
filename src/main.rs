@@ -52,7 +52,9 @@ fn main() {
     };
 
     let mut options = vec![MountOption::FSName("fuse_ecample".to_string())];
-    options.push(MountOption::AutoUnmount);
-    options.push(MountOption::AllowRoot);
+    // These require specific behaviour in  /etc/fuse.conf because umount requires root
+    // root is not the user so it gets tricky
+    // options.push(MountOption::AutoUnmount);
+    // options.push(MountOption::AllowRoot);
     fuser::mount2(fs, cli.mountpoint, &options).unwrap();
 }
