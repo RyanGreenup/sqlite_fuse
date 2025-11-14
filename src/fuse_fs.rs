@@ -35,20 +35,31 @@ impl ExampleFuseFs {
     }
 
     fn is_dir(&self, path: &str) -> bool {
-        let parent_id = self.get_parent_id_from_path(path);
-        if let Some(parent_id) = parent_id {
-            return self.db.get_child_count(&parent_id) > 0;
+        if path == "/" {
+            return true;  // Root is always a directory
+        }
+        
+        let id = self.db.get_id_from_path(path);
+        if let Some(id) = id {
+            return self.db.get_child_count(&id) > 0;
         } else {
             return false;
         }
     }
 
     fn get_content(&self, path: &str) -> Option<String> {
+        if path == "/" {
+            return None;  // Root directory has no content
+        }
+        
         let id = self.db.get_id_from_path(path);
         if let Some(id) = id {
             self.db.get_content(&id)
         } else {
-            eprintln!("[WARNING] Unable to get id for {path}");
+            // Only warn for paths that aren't system files
+            if !Self::is_system_file(path) {
+                eprintln!("[WARNING] Unable to get id for {path}");
+            }
             return None;
         }
     }
@@ -94,17 +105,29 @@ impl ExampleFuseFs {
 
     fn get_children(&self, path: &str) -> Vec<(bool, String)> {
         let mut results: Vec<(bool, String)> = vec![];
-        match self.db.get_id_from_path(path) {
-            Some(id) => {
-                for item in self.db.get_children(&id) {
-                    let count = self.db.get_child_count(&id);
-                    let is_db = count > 0;
-                    results.push((is_db, item.title.clone()));
+        
+        if path == "/" {
+            // For root path, get items with no parent
+            for item in self.db.get_all().values() {
+                if item.parent_id.is_none() {
+                    let count = self.db.get_child_count(&item.id);
+                    let is_dir = count > 0;
+                    results.push((is_dir, item.title.clone()));
                 }
             }
-            None => {
-                eprintln!("[WARNING] Could not find id for path {path}");
-                return vec![];
+        } else {
+            match self.db.get_id_from_path(path) {
+                Some(id) => {
+                    for item in self.db.get_children(&id) {
+                        let count = self.db.get_child_count(&item.id);
+                        let is_dir = count > 0;
+                        results.push((is_dir, item.title.clone()));
+                    }
+                }
+                None => {
+                    eprintln!("[WARNING] Could not find id for path {path}");
+                    return vec![];
+                }
             }
         }
 
@@ -129,10 +152,11 @@ impl ExampleFuseFs {
 
     pub fn get_parent_id_from_path(&self, path: &str) -> Option<String> {
         if let Some(id) = self.db.get_id_from_path(path) {
-            eprintln!("Unable to get ID from {path}");
             if let Some(item) = self.db.get(&id) {
                 return item.parent_id.clone();
             }
+        } else {
+            eprintln!("Unable to get ID from {path}");
         }
         None
     }
@@ -155,6 +179,18 @@ impl ExampleFuseFs {
         return parent_note_id;
     }
 
+    fn is_system_file(path: &str) -> bool {
+        // Extract filename from path
+        let filename = path.split('/').last().unwrap_or(path);
+        
+        // Common system files that programs try to access
+        filename.ends_with(".so") || 
+        filename.ends_with(".so.1") ||
+        filename.ends_with(".so.6") ||
+        filename == "glibc-hwcaps" ||
+        filename.starts_with("lib") && filename.contains(".so")
+    }
+    
     fn is_editor_temp_file(filename: &str) -> bool {
         // Vim/Neovim swap files
         if filename.starts_with('.') && filename.ends_with(".swp") {
@@ -503,12 +539,6 @@ impl Filesystem for ExampleFuseFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        // ino=1 => directory
-        // If it's not a directory, don't list anything
-        if ino != 1 {
-            reply.error(ENOENT);
-            return;
-        }
 
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
@@ -518,24 +548,48 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Determine parent inode
+        let parent_ino = if path == "/" {
+            1  // Root's parent is itself
+        } else {
+            // Find parent path and get its inode
+            if let Some(pos) = path.rfind('/') {
+                let parent_path = if pos == 0 { "/" } else { &path[..pos] };
+                self.inode_map.get(parent_path).copied().unwrap_or(1)
+            } else {
+                1
+            }
+        };
+        
         // Handle entries that should always be there
         let mut entries = vec![
             (ino, FileType::Directory, ".".to_string()),
-            (1, FileType::Directory, "..".to_string()),
+            (parent_ino, FileType::Directory, "..".to_string()),
         ];
 
         // Get additional Entries from the database
+        let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
         for (is_dir, title) in self.get_children(&path) {
-            let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
-
             if !seen_titles.contains(&title) {
                 seen_titles.insert(title.clone());
-                let entry = if is_dir {
-                    (1, FileType::Directory, title.to_string())
+                
+                // Create full path for the child
+                let child_path = if path == "/" {
+                    format!("/{}", title)
                 } else {
-                    (2, FileType::RegularFile, title.to_string())
+                    format!("{}/{}", path, title)
                 };
-                entries.push(entry);
+                
+                // Get or create inode for the child
+                let child_ino = self.get_or_create_inode(&child_path);
+                
+                let file_type = if is_dir {
+                    FileType::Directory
+                } else {
+                    FileType::RegularFile
+                };
+                
+                entries.push((child_ino, file_type, title.to_string()));
             }
         }
 

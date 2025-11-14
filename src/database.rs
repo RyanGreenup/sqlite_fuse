@@ -25,12 +25,26 @@ fn generate_uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
+impl Default for Database {
+    fn default() -> Self {
+        let mut db = Self {
+            items: HashMap::new(),
+        };
+        
+        // Add default entries
+        db.create(Some("root"), "Home", None);
+        db.create(Some("documents"), "Documents", Some("root"));
+        db.create(Some("projects"), "Projects", Some("root"));
+        db.create(Some("readme"), "README.txt", Some("documents"));
+        
+        db
+    }
+}
+
 impl Database {
     // Init
     pub fn new() -> Self {
-        return Self {
-            items: HashMap::new(),
-        };
+        Self::default()
     }
     // Create
     pub fn create(&mut self, id: Option<&str>, title: &str, parent_id: Option<&str>) {
@@ -124,7 +138,11 @@ impl Database {
     }
 
     pub fn get_id_from_path(&self, path: &str) -> Option<String> {
-        let components: Vec<&str> = path.split('/').collect();
+        if path == "/" {
+            return None; // Root path has no ID
+        }
+        
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut current_id = None;
 
         for component in components {
