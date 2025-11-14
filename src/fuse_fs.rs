@@ -1,27 +1,23 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    intrinsics::offset,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use chrono::Utc;
+use chrono_tz::{Australia::Sydney, Tz};
+const TIMEZONE: Tz = Sydney; // Australia/Sydney timezone
 
 use fuser::Filesystem;
 
 use libc::ENOENT;
 use std::ffi::OsStr;
 
-use fuser::{
-    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry,
-    Request,
-};
+use fuser::{FileAttr, FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
 
 use crate::database::Database;
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
-
-pub fn hello() {
-    println!("Hello");
-}
 
 pub struct ExampleFuseFs {
     inode_map: HashMap<String, u64>,
@@ -114,7 +110,6 @@ impl ExampleFuseFs {
 
         return results;
     }
-
 
     fn get_path_from_inode(&self, inode: u64) -> Option<&String> {
         self.reverse_inode_map.get(&inode)
@@ -211,6 +206,48 @@ impl ExampleFuseFs {
         };
 
         return parent_note_id;
+    }
+
+    fn current_timestamp() -> String {
+        let utc_now = Utc::now();
+        let sydney_time = utc_now.with_timezone(&TIMEZONE);
+        sydney_time.format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+
+    pub fn new() -> Result<Self, Box<dyn Error>> {
+        /*
+        // Create performance indexes for unified notes table
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_parent_title ON notes(parent_id, title)",
+            [],
+        )?;
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_parent_updated ON notes(parent_id, updated_at DESC)",
+            [],
+        )?;
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_parent_id ON notes(parent_id)",
+            [],
+        )?;
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes(user_id)",
+            [],
+        )?;
+        */
+        let db = Database::new();
+
+        let mut fs = ExampleFuseFs {
+            db,
+            inode_map: HashMap::new(),
+            reverse_inode_map: HashMap::new(),
+            next_inode: 2,
+        };
+
+        // Root directory gets inode 1
+        fs.inode_map.insert("/".to_string(), 1);
+        fs.reverse_inode_map.insert(1, "/".to_string());
+
+        Ok(fs)
     }
 }
 
@@ -548,11 +585,13 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Get the id of the parent item
-        let id = self.db.get_id_from_path(&parent_path).expect("Unable to find id for the directory {parent_path}");
+        let id = self
+            .db
+            .get_id_from_path(&parent_path)
+            .expect("Unable to find id for the directory {parent_path}");
 
         // Create the note
         self.db.create(None, folder_name, Some(&id));
-
 
         // Use the note_id (either existing or newly created) for further operations
         {
@@ -665,16 +704,21 @@ impl Filesystem for ExampleFuseFs {
             return;
         }
 
-        // Extract title and extension from filename
-        let (title, extension) = if let Some(dot_pos) = file_name.rfind('.') {
-            let title = &file_name[..dot_pos];
-            let ext = Self::get_extension_from_filename(file_name);
-            (title, ext)
-        } else {
-            // No extension, default to txt
-            (file_name, "txt")
-        };
+        /*
+        // Consider splitting the extension to store in a db field
+        let path = Path::new(file_name);
+        let base = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
+        */
+        let id = self
+            .db
+            .get_id_from_path(&parent_path)
+            .expect("Cannot get id for path {parent_path}");
 
+        self.db.create(None, file_name, Some(&id));
+
+        /*
+        If this panics we could instead:
         // Get or create the note for this file
         let _note_id = match self.get_or_create_note(&parent_path, title, "", extension) {
             Ok(id) => id,
@@ -683,6 +727,7 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
+        */
 
         // Use the note_id (either existing or newly created) for further operations
         {
@@ -766,173 +811,83 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Get the parent note ID (unified schema)
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
+        let parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
             }
         };
 
-        // Handle index file writes (writing to parent note's content)
-        if filename.starts_with("index.") {
-            if let Some(parent_id) = &parent_note_id {
-                // Get current content of the parent note
-                let current_content = match self.db.query_row(
-                    "SELECT content FROM notes WHERE id = ?1",
-                    [parent_id],
-                    |row| row.get::<_, String>(0),
-                ) {
-                    Ok(content) => content,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                };
+        // Get the id of this note
+        let id = self
+            .db
+            .get_id_from_path(&path)
+            .expect("Unable to get id for {path}");
 
-                // Handle the write operation
-                let new_content = if offset == 0 {
-                    // Overwrite from the beginning
-                    String::from_utf8_lossy(data).to_string()
-                } else {
-                    // Append or insert at offset
-                    let mut content_bytes = current_content.into_bytes();
-                    let start_pos = offset as usize;
-
-                    if start_pos > content_bytes.len() {
-                        // If offset is beyond current content, pad with zeros
-                        content_bytes.resize(start_pos, 0);
-                    }
-
-                    // Replace or extend content
-                    if start_pos + data.len() <= content_bytes.len() {
-                        // Replace existing content
-                        content_bytes[start_pos..start_pos + data.len()].copy_from_slice(data);
-                    } else {
-                        // Extend content
-                        content_bytes.truncate(start_pos);
-                        content_bytes.extend_from_slice(data);
-                    }
-
-                    String::from_utf8_lossy(&content_bytes).to_string()
-                };
-
-                // Update the parent note's content
-                let now = Self::current_timestamp();
-                match self.db.execute(
-                    "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![&new_content, &now, parent_id],
-                ) {
-                    Ok(_) => {
-                        reply.written(data.len() as u32);
-                    }
-                    Err(_) => {
-                        reply.error(libc::EIO);
-                    }
-                }
-                return;
-            }
+        // Confirm this is not a directory
+        if self.is_dir(&path) {
+            reply.error(libc::EISDIR);
+            return;
         }
 
-        // Handle regular file writes (writing to leaf note's content)
-        if let Some(dot_pos) = filename.rfind('.') {
-            let title_without_ext = &filename[..dot_pos];
-            let requested_ext = &filename[dot_pos + 1..];
+        // Get the content
+        // TODO consider that every look up is expensive
+        let content = self
+            .get_content(&path)
+            .expect("Unable to get content for {path}");
 
-            // Look up the note by title (without extension)
-            let note_query = "SELECT id, content, syntax FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1";
+        // Handle the write operation
+        let new_content = if offset == 0 {
+            // Overwrite from the beginning
+            String::from_utf8_lossy(data).to_string()
+        } else {
+            // Append or insert at offset
+            let mut content_bytes = content.into_bytes();
+            let start_pos = offset as usize;
 
-            if let Ok(note_result) = self.db.query_row(
-                note_query,
-                rusqlite::params![parent_note_id, title_without_ext],
-                |row| {
-                    let id: String = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let syntax: String = row.get(2)?;
-                    Ok((id, content, syntax))
-                },
-            ) {
-                // Verify the extension matches the note's syntax
-                let expected_ext = &note_result.2;
-                if requested_ext != expected_ext {
-                    reply.error(ENOENT);
-                    return;
-                }
+            if start_pos > content_bytes.len() {
+                // If offset is beyond current content, pad with zeros
+                content_bytes.resize(start_pos, 0);
+            }
 
-                // Check that this note has no children (is a file, not a directory)
-                let has_children = self
-                    .db
-                    .query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                        [&note_result.0],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0)
-                    > 0;
+            // Replace or extend content
+            if start_pos + data.len() <= content_bytes.len() {
+                // Replace existing content
+                content_bytes[start_pos..start_pos + data.len()].copy_from_slice(data);
+            } else {
+                // Extend content
+                content_bytes.truncate(start_pos);
+                content_bytes.extend_from_slice(data);
+            }
 
-                if has_children {
-                    // This note has children, so it's a directory - can't write to it directly
-                    // User should write to the index file instead
-                    reply.error(libc::EISDIR);
-                    return;
-                }
+            String::from_utf8_lossy(&content_bytes).to_string()
+        };
 
-                // Handle the write operation
-                let new_content = if offset == 0 {
-                    // Overwrite from the beginning
-                    String::from_utf8_lossy(data).to_string()
-                } else {
-                    // Append or insert at offset
-                    let mut content_bytes = note_result.1.into_bytes();
-                    let start_pos = offset as usize;
-
-                    if start_pos > content_bytes.len() {
-                        // If offset is beyond current content, pad with zeros
-                        content_bytes.resize(start_pos, 0);
-                    }
-
-                    // Replace or extend content
-                    if start_pos + data.len() <= content_bytes.len() {
-                        // Replace existing content
-                        content_bytes[start_pos..start_pos + data.len()].copy_from_slice(data);
-                    } else {
-                        // Extend content
-                        content_bytes.truncate(start_pos);
-                        content_bytes.extend_from_slice(data);
-                    }
-
-                    String::from_utf8_lossy(&content_bytes).to_string()
-                };
-
-                // Update the note's content
-                let now = Self::current_timestamp();
-                match self.db.execute(
-                    "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![&new_content, &now, &note_result.0],
-                ) {
-                    Ok(_) => {
-                        reply.written(data.len() as u32);
-                    }
-                    Err(_) => {
-                        reply.error(libc::EIO);
-                    }
-                }
-                return;
+        // Update the note's content
+        let now = Self::current_timestamp();
+        // Something like this
+        /*
+        match self.db.execute(
+            "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![&new_content, &now, &note_result.0],
+        ) {
+            Ok(_) => {
+                reply.written(data.len() as u32);
+            }
+            Err(_) => {
+                reply.error(libc::EIO);
             }
         }
-
-        reply.error(ENOENT);
+        */
+        // return;
+        // reply.error(ENOENT);
     }
 
     /// Handle file opening operations (unified schema)
     ///
     /// This method verifies that a file exists before allowing it to be opened.
-    /// In the unified schema, this handles both regular files (leaf notes) and
-    /// index files (content of parent notes that have children).
     fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
         // Verify that the inode exists and corresponds to a valid file
         let path = match self.get_path_from_inode(ino) {
@@ -944,110 +899,29 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Extract the filename and parent path for database verification
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
-        } else {
-            ("/", &path[..])
-        };
+        let (parent_path, filename) = Self::split_parent_path_and_filename(&path);
 
-        // Get parent note ID (None for root level)
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
-
-        // Handle special case for index files (index.{ext})
-        if filename.starts_with("index.") {
-            if let Some(parent_id) = &parent_note_id {
-                // Check if the parent note exists and verify extension matches syntax
-                let note_exists = self
-                    .db
-                    .query_row(
-                        "SELECT syntax FROM notes WHERE id = ?1",
-                        [parent_id],
-                        |row| {
-                            let syntax: String = row.get(0)?;
-                            let expected_ext = &syntax;
-                            let expected_index = format!("index.{}", expected_ext);
-                            Ok(filename == expected_index)
-                        },
-                    )
-                    .unwrap_or(false);
-
-                if note_exists {
-                    reply.opened(ino, 0);
-                } else {
-                    reply.error(ENOENT);
-                }
-                return;
-            } else {
-                // Index file at root level doesn't make sense
+        // Get the parent note ID (unified schema)
+        let parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("{e}");
                 reply.error(ENOENT);
                 return;
             }
+        };
+
+        if !self.db.get_id_from_path(&path).is_some() {
+            eprintln!("[ERROR] Could not find {path} in the database, which is unexpected");
+            reply.error(ENOENT);
+            return;
         }
 
-        // Handle regular files - extract title and verify extension
-        let (title, requested_ext) = if let Some(dot_pos) = filename.rfind('.') {
-            let title = &filename[..dot_pos];
-            let ext = &filename[dot_pos + 1..];
-            (title, Some(ext))
+        // A directory should be accessed as a directory, not a file
+        if self.is_dir(&path) {
+            reply.error(ENOENT)
         } else {
-            // No extension - this shouldn't happen for files in our schema
-            (filename, None)
-        };
-
-        // Look up the note in the database
-        let note_query = "SELECT id, syntax FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1";
-
-        if let Ok((note_id, syntax)) = self.db.query_row(
-            note_query,
-            rusqlite::params![parent_note_id, title],
-            |row| {
-                let id: String = row.get(0)?;
-                let syntax: String = row.get(1)?;
-                Ok((id, syntax))
-            },
-        ) {
-            // Verify the file extension matches the note's syntax
-            if let Some(req_ext) = requested_ext {
-                let expected_ext = &syntax;
-                if req_ext != expected_ext {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-
-            // Check if this note has children (making it a directory)
-            let has_children = self
-                .db
-                .query_row(
-                    "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                    [&note_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap_or(0)
-                > 0;
-
-            if has_children {
-                // This note has children, so it should be accessed as a directory, not a file
-                reply.error(ENOENT);
-            } else {
-                // This is a leaf note (file), allow opening
-                reply.opened(ino, 0);
-            }
-        } else {
-            // Note doesn't exist in database
-            reply.error(ENOENT);
+            reply.opened(ino, 0);
         }
     }
 
@@ -1099,127 +973,31 @@ impl Filesystem for ExampleFuseFs {
             ("/", &path[..])
         };
 
-        // Handle index files (index.{ext}) - these access parent note content
-        if filename.starts_with("index.") {
-            let parent_note_id = if parent_path == "/" {
-                reply.error(ENOENT); // Root can't have index file
-                return;
-            } else {
-                match self.get_parent_folder_id(parent_path) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                }
-            };
-
-            // Handle size changes for index file (modifies parent note content)
-            if let Some(new_size) = size {
-                let current_content = match self.db.query_row(
-                    "SELECT content FROM notes WHERE id = ?1",
-                    [&parent_note_id],
-                    |row| row.get::<_, String>(0),
-                ) {
-                    Ok(content) => content,
-                    Err(_) => {
-                        reply.error(ENOENT);
-                        return;
-                    }
-                };
-
-                let mut content_bytes = current_content.into_bytes();
-                let target_size = new_size as usize;
-
-                // Adjust content size based on target
-                if target_size < content_bytes.len() {
-                    content_bytes.truncate(target_size);
-                } else if target_size > content_bytes.len() {
-                    content_bytes.resize(target_size, 0);
-                }
-
-                let new_content = String::from_utf8_lossy(&content_bytes).to_string();
-
-                // Update parent note content
-                let now = Self::current_timestamp();
-                if let Err(_) = self.db.execute(
-                    "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
-                    [&new_content, &now, &parent_note_id],
-                ) {
-                    reply.error(libc::EIO);
-                    return;
-                }
-            }
-
-            // Get current parent note information for returning attributes
-            let (content_size, _created_at, _updated_at) = match self.db.query_row(
-                "SELECT content, created_at, updated_at FROM notes WHERE id = ?1",
-                [&parent_note_id],
-                |row| {
-                    let content: String = row.get(0)?;
-                    let created: String = row.get(1)?;
-                    let updated: String = row.get(2)?;
-                    Ok((content.len(), created, updated))
-                },
-            ) {
-                Ok(data) => data,
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-
-            let attr = FileAttr {
-                ino,
-                size: content_size as u64,
-                blocks: content_size.div_ceil(512) as u64,
-                atime: UNIX_EPOCH,  // TODO: Parse created_at string
-                mtime: UNIX_EPOCH,  // TODO: Parse updated_at string
-                ctime: UNIX_EPOCH,  // TODO: Parse updated_at string
-                crtime: UNIX_EPOCH, // TODO: Parse created_at string
-                kind: FileType::RegularFile,
-                perm: mode.unwrap_or(0o644) as u16,
-                nlink: 1,
-                uid: uid.unwrap_or(501),
-                gid: gid.unwrap_or(20),
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-
-            reply.attr(&TTL, &attr);
-            return;
-        }
-
         // Handle regular files - strip extension and find note by title
         let parent_note_id = if parent_path == "/" {
             None
         } else {
-            match self.get_parent_folder_id(parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
+            match self.db.get_id_from_path(parent_path) {
+                Some(id) => Some(id),
+                None => {
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // Extract title from filename (remove extension)
-        let title = if let Some(dot_pos) = filename.rfind('.') {
-            &filename[..dot_pos]
-        } else {
-            filename
-        };
+        // Extract the title from the filename (i.e. handle extensions etc.)
+        let title = filename;
+        let id = self
+            .db
+            .get_id_from_path(&path)
+            .expect("[ERROR] could not get id for {path}");
 
         // Handle size changes (file truncation/extension)
         if let Some(new_size) = size {
-            let current_content = match self.db.query_row(
-                "SELECT content FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1",
-                rusqlite::params![parent_note_id, title],
-                |row| row.get::<_, String>(0)
-            ) {
-                Ok(content) => content,
-                Err(_) => {
+            let current_content = match self.db.get_content(&id) {
+                Some(content) => content,
+                None => {
                     reply.error(ENOENT);
                     return;
                 }
@@ -1235,46 +1013,21 @@ impl Filesystem for ExampleFuseFs {
                 content_bytes.resize(target_size, 0);
             }
 
-            let new_content = String::from_utf8_lossy(&content_bytes).to_string();
-
-            // Update content in database
-            let now = Self::current_timestamp();
-            if let Err(_) = self.db.execute(
-                "UPDATE notes SET content = ?1, updated_at = ?2 WHERE parent_id IS ?3 AND title = ?4",
-                rusqlite::params![&new_content, &now, parent_note_id, title],
-            ) {
-                reply.error(libc::EIO);
-                return;
-            }
+            // Write the new_content too
+            // let new_content = String::from_utf8_lossy(&content_bytes).to_string();
+            //
+            self.db.update(&id, Some(title), parent_note_id.as_deref());
         }
-
-        // Get current file information for returning updated attributes
-        let (content_size, _created_at, _updated_at) = match self.db.query_row(
-            "SELECT content, created_at, updated_at FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1",
-            rusqlite::params![parent_note_id, title],
-            |row| {
-                let content: String = row.get(0)?;
-                let created: String = row.get(1)?;
-                let updated: String = row.get(2)?;
-                Ok((content.len(), created, updated))
-            }
-        ) {
-            Ok(data) => data,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
 
         // Return updated file attributes
         let attr = FileAttr {
             ino,
-            size: content_size as u64,
-            blocks: content_size.div_ceil(512) as u64,
-            atime: UNIX_EPOCH,  // TODO: Parse created_at string
-            mtime: UNIX_EPOCH,  // TODO: Parse updated_at string
-            ctime: UNIX_EPOCH,  // TODO: Parse updated_at string
-            crtime: UNIX_EPOCH, // TODO: Parse created_at string
+            size: self.content_size(&id) as u64,
+            blocks: self.content_size(&id).div_ceil(512) as u64,
+            atime: UNIX_EPOCH,  // TODO: Parse created_at string from db
+            mtime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
+            ctime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
+            crtime: UNIX_EPOCH, // TODO: Parse created_at string from db
             kind: FileType::RegularFile,
             perm: mode.unwrap_or(0o644) as u16,
             nlink: 1,
@@ -1404,9 +1157,9 @@ impl Filesystem for ExampleFuseFs {
         let parent_note_id = if parent_path == "/" {
             None
         } else {
-            match self.get_parent_folder_id(&parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
+            match self.db.get_id_from_path(&parent_path) {
+                Some(id) => Some(id),
+                None => {
                     reply.error(ENOENT);
                     return;
                 }
@@ -1416,200 +1169,77 @@ impl Filesystem for ExampleFuseFs {
         let new_parent_note_id = if new_parent_path == "/" {
             None
         } else {
-            match self.get_parent_folder_id(&new_parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
+            match self.db.get_id_from_path(&new_parent_path) {
+                Some(id) => Some(id),
+                None => {
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // Handle special case for index files (index.{ext})
-        if old_name.starts_with("index.") && new_name.starts_with("index.") {
-            // Renaming index file - this changes the parent note's syntax
-            if let Some(parent_id) = &parent_note_id {
-                if let Some(new_parent_id) = &new_parent_note_id {
-                    if parent_id == new_parent_id {
-                        // Same parent, just changing syntax
-                        if let Some(new_dot_pos) = new_name.rfind('.') {
-                            let new_ext = &new_name[new_dot_pos + 1..];
-                            let new_extension = Self::normalize_extension(new_ext);
-
-                            // Get current timestamp in Australia/Sydney timezone
-                            let now = Self::current_timestamp();
-
-                            let update_result = self.db.execute(
-                                "UPDATE notes SET syntax = ?1, updated_at = ?2 WHERE id = ?3",
-                                rusqlite::params![new_extension, &now, parent_id],
-                            );
-
-                            match update_result {
-                                Ok(rows_affected) => {
-                                    if rows_affected > 0 {
-                                        // Update inode mappings
-                                        let old_path = if parent_path == "/" {
-                                            format!("/{old_name}")
-                                        } else {
-                                            format!("{parent_path}/{old_name}")
-                                        };
-                                        let new_path = if new_parent_path == "/" {
-                                            format!("/{new_name}")
-                                        } else {
-                                            format!("{new_parent_path}/{new_name}")
-                                        };
-
-                                        if let Some(inode) = self.inode_map.remove(&old_path) {
-                                            self.inode_map.insert(new_path.clone(), inode);
-                                            self.reverse_inode_map.insert(inode, new_path);
-                                        }
-
-                                        reply.ok();
-                                        return;
-                                    }
-                                }
-                                Err(_) => {
-                                    reply.error(libc::EIO);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            reply.error(ENOENT);
-            return;
-        }
-
         // Handle regular file/directory renaming
-        // Extract titles and extensions
-        let (old_title, old_ext) = if let Some(dot_pos) = old_name.rfind('.') {
-            (&old_name[..dot_pos], Some(&old_name[dot_pos + 1..]))
+        // Get the old path from the old parent and name
+        let old_path = if parent_path == "/" {
+            format!("/{old_name}")
         } else {
-            (old_name, None)
+            format!("{parent_path}/{old_name}")
         };
 
-        let (new_title, new_ext) = if let Some(dot_pos) = new_name.rfind('.') {
-            (&new_name[..dot_pos], Some(&new_name[dot_pos + 1..]))
-        } else {
-            (new_name, None)
-        };
-
-        // Find the note to rename and get its current syntax
-        let note_query = "SELECT id, syntax FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1";
-
-        let note_result = self.db.query_row(
-            note_query,
-            rusqlite::params![parent_note_id, old_title],
-            |row| {
-                let id: String = row.get(0)?;
-                let syntax: String = row.get(1)?;
-                Ok((id, syntax))
-            },
-        );
-
-        let (note_id, current_syntax) = match note_result {
-            Ok(result) => result,
-            Err(_) => {
+        // Get the ID for the item being renamed
+        let id = match self.db.get_id_from_path(&old_path) {
+            Some(id) => id,
+            None => {
+                eprintln!("[WARNING] Cannot get id for {}", old_path);
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        // Validate old extension matches current syntax (if file has extension)
-        if let Some(old_extension) = old_ext {
-            let expected_ext = &current_syntax;
-            if old_extension != expected_ext {
-                reply.error(ENOENT);
-                return;
-            }
-        }
-
-        // Check if this note has children to determine if it's a directory
-        let has_children = self
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                [&note_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
-            > 0;
-
-        // Determine the new extension
-        let new_extension = if has_children {
-            // This is a directory - extension change means extension change but still a directory
-            if let Some(new_ext) = new_ext {
-                Self::normalize_extension(new_ext)
-            } else {
-                &current_syntax
-            }
-        } else {
-            // This is a file - validate extension and determine extension
-            if let Some(new_ext) = new_ext {
-                Self::normalize_extension(new_ext)
-            } else {
-                "txt" // No extension defaults to txt
-            }
-        };
-
-        // Get current timestamp in Australia/Sydney timezone
         let now = Self::current_timestamp();
 
+        // handle extensions
+        let new_title = new_name;
+
         // Update the note with new title, parent, and extension
-        let update_result = self.db.execute(
-            "UPDATE notes SET title = ?1, parent_id = ?2, syntax = ?3, updated_at = ?4 WHERE id = ?5",
-            rusqlite::params![new_title, new_parent_note_id, new_extension, &now, &note_id]
-        );
+        self.db
+            .update(&id, Some(new_title), new_parent_note_id.as_deref());
 
-        match update_result {
-            Ok(rows_affected) => {
-                if rows_affected > 0 {
-                    // Successfully renamed the note
-                    // Update inode mappings for the renamed item and all its descendants
-                    let old_path = if parent_path == "/" {
-                        format!("/{old_name}")
-                    } else {
-                        format!("{parent_path}/{old_name}")
-                    };
+        // Successfully renamed the note
+        // Update inode mappings for the renamed item and all its descendants
+        let old_path = if parent_path == "/" {
+            format!("/{old_name}")
+        } else {
+            format!("{parent_path}/{old_name}")
+        };
 
-                    let new_path = if new_parent_path == "/" {
-                        format!("/{new_name}")
-                    } else {
-                        format!("{new_parent_path}/{new_name}")
-                    };
+        let new_path = if new_parent_path == "/" {
+            format!("/{new_name}")
+        } else {
+            format!("{new_parent_path}/{new_name}")
+        };
 
-                    // Collect paths to update (including descendants)
-                    let mut paths_to_update = Vec::new();
-                    for (path, inode) in &self.inode_map {
-                        if path == &old_path || path.starts_with(&format!("{old_path}/")) {
-                            let new_descendant_path = if path == &old_path {
-                                new_path.clone()
-                            } else {
-                                path.replacen(&old_path, &new_path, 1)
-                            };
-                            paths_to_update.push((path.clone(), new_descendant_path, *inode));
-                        }
-                    }
-
-                    // Apply the inode mapping updates
-                    for (old_path, new_path, inode) in paths_to_update {
-                        self.inode_map.remove(&old_path);
-                        self.inode_map.insert(new_path.clone(), inode);
-                        self.reverse_inode_map.insert(inode, new_path);
-                    }
-
-                    reply.ok();
+        // Collect paths to update (including descendants)
+        let mut paths_to_update = Vec::new();
+        for (path, inode) in &self.inode_map {
+            if path == &old_path || path.starts_with(&format!("{old_path}/")) {
+                let new_descendant_path = if path == &old_path {
+                    new_path.clone()
                 } else {
-                    // No rows affected - note not found
-                    reply.error(ENOENT);
-                }
-            }
-            Err(_) => {
-                // Database error
-                reply.error(libc::EIO);
+                    path.replacen(&old_path, &new_path, 1)
+                };
+                paths_to_update.push((path.clone(), new_descendant_path, *inode));
             }
         }
+
+        // Apply the inode mapping updates
+        for (old_path, new_path, inode) in paths_to_update {
+            self.inode_map.remove(&old_path);
+            self.inode_map.insert(new_path.clone(), inode);
+            self.reverse_inode_map.insert(inode, new_path);
+        }
+
+        reply.ok();
     }
 
     /// Handle file deletion operations (unified schema)
@@ -1626,6 +1256,7 @@ impl Filesystem for ExampleFuseFs {
     /// - Updates inode mappings to reflect the deletion
     /// - Required for proper file manager and shell integration
     fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        // Check the filename
         let filename = match name.to_str() {
             Some(n) => n,
             None => {
@@ -1633,6 +1264,14 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
+
+        // Handle special editor files (backup, swap, temporary files)
+        if Self::is_editor_temp_file(filename) {
+            // For editor temporary files, just reply OK without doing anything
+            // This allows editors like Neovim to create and delete backup files
+            reply.ok();
+            return;
+        }
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -1643,176 +1282,36 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get parent note ID (None for root level)
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(&parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
+        let path = "{parent_path}/{filename}";
 
-        // Handle special case for index files (index.{ext})
-        if filename.starts_with("index.") {
-            if let Some(parent_id) = &parent_note_id {
-                // Get the parent note's syntax to validate the extension
-                if let Ok(parent_syntax) = self.db.query_row(
-                    "SELECT syntax FROM notes WHERE id = ?1",
-                    [parent_id],
-                    |row| row.get::<_, String>(0),
-                ) {
-                    // Extract the requested extension
-                    if let Some(dot_pos) = filename.rfind('.') {
-                        let requested_ext = &filename[dot_pos + 1..];
-                        let expected_ext = &parent_syntax;
-
-                        // Verify the extension matches the parent note's syntax
-                        if requested_ext == expected_ext {
-                            // Clear the content of the parent note instead of deleting it
-                            let now = Self::current_timestamp();
-                            let result = self.db.execute(
-                                "UPDATE notes SET content = '', updated_at = ?1 WHERE id = ?2",
-                                rusqlite::params!["", &now, parent_id],
-                            );
-
-                            match result {
-                                Ok(rows_affected) => {
-                                    if rows_affected > 0 {
-                                        // Successfully cleared content
-                                        // Remove from inode mappings
-                                        let file_path = if parent_path == "/" {
-                                            format!("/{filename}")
-                                        } else {
-                                            format!("{parent_path}/{filename}")
-                                        };
-
-                                        if let Some(inode) = self.inode_map.remove(&file_path) {
-                                            self.reverse_inode_map.remove(&inode);
-                                        }
-
-                                        reply.ok();
-                                    } else {
-                                        reply.error(ENOENT);
-                                    }
-                                }
-                                Err(_) => {
-                                    reply.error(libc::EIO);
-                                }
-                            }
-                        } else {
-                            // Extension doesn't match the note's syntax
-                            reply.error(ENOENT);
-                        }
-                    } else {
-                        // No extension in filename
-                        reply.error(ENOENT);
-                    }
-                } else {
-                    // Parent note not found
-                    reply.error(ENOENT);
-                }
-                return;
-            }
-        }
-
-        // Handle special editor files (backup, swap, temporary files)
-        if Self::is_editor_temp_file(filename) {
-            // For editor temporary files, just reply OK without doing anything
-            // This allows editors like Neovim to create and delete backup files
-            reply.ok();
-            return;
-        }
-
-        // Handle regular file deletion
-        // Extract title and extension from filename
-        let (title, requested_ext) = if let Some(dot_pos) = filename.rfind('.') {
-            (&filename[..dot_pos], Some(&filename[dot_pos + 1..]))
-        } else {
-            (filename, None)
-        };
-
-        // Find the note to delete and validate extension matches syntax
-        let note_query = "SELECT id, syntax FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1";
-
-        let note_result = self.db.query_row(
-            note_query,
-            rusqlite::params![parent_note_id, title],
-            |row| {
-                let id: String = row.get(0)?;
-                let syntax: String = row.get(1)?;
-                Ok((id, syntax))
-            },
-        );
-
-        let (note_id, note_syntax) = match note_result {
-            Ok(result) => result,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Validate that the requested extension matches the note's syntax
-        if let Some(ext) = requested_ext {
-            let expected_ext = &note_syntax;
-            if ext != expected_ext {
-                // Extension doesn't match the note's syntax
-                reply.error(ENOENT);
-                return;
-            }
-        }
-
-        // Check if this note has children (if so, it's a directory and cannot be deleted as a file)
-        let has_children = self
+        // Get the id
+        let id = self
             .db
-            .query_row(
-                "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                [&note_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
-            > 0;
+            .get_id_from_path(path)
+            .expect("[WARNING] Unable to find id for {path}");
 
-        if has_children {
+        if self.is_dir(&path) {
             // This note has children, so it's a directory - cannot delete as a file
             reply.error(libc::EISDIR);
             return;
         }
+        self.db.delete(&id);
 
-        // Delete the note (it's a leaf note with no children)
-        let result = self
-            .db
-            .execute("DELETE FROM notes WHERE id = ?1", [&note_id]);
+        // If not successful
+        // reply.error(libc::EIO);
+        // return
+        // If that was successful
+        let file_path = if parent_path == "/" {
+            format!("/{filename}")
+        } else {
+            format!("{parent_path}/{filename}")
+        };
 
-        match result {
-            Ok(rows_affected) => {
-                if rows_affected > 0 {
-                    // Successfully deleted the file
-                    // Remove from inode mappings
-                    let file_path = if parent_path == "/" {
-                        format!("/{filename}")
-                    } else {
-                        format!("{parent_path}/{filename}")
-                    };
-
-                    if let Some(inode) = self.inode_map.remove(&file_path) {
-                        self.reverse_inode_map.remove(&inode);
-                    }
-
-                    reply.ok();
-                } else {
-                    // Should not happen since we just queried for it
-                    reply.error(ENOENT);
-                }
-            }
-            Err(_) => {
-                reply.error(libc::EIO);
-            }
+        if let Some(inode) = self.inode_map.remove(&file_path) {
+            self.reverse_inode_map.remove(&inode);
         }
+
+        reply.ok();
     }
 
     /// Handle directory deletion operations (unified schema)
@@ -1843,95 +1342,44 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get parent note ID from database (unified schema)
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(&parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
+        // get the path
+        let path = format!("{parent_path}/{dirname}");
 
-        // First, get the note ID that represents the directory we want to delete
-        let note_to_delete_id: Result<String, rusqlite::Error> = self.db.query_row(
-            "SELECT id FROM notes
-             WHERE parent_id IS ?1 AND title = ?2
-             ORDER BY updated_at DESC
-             LIMIT 1",
-            rusqlite::params![parent_note_id, dirname],
-            |row| row.get(0),
-        );
-
-        let note_id = match note_to_delete_id {
-            Ok(id) => id,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Check if the directory is empty (no child notes)
-        let child_count: Result<i64, rusqlite::Error> = self.db.query_row(
-            "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-            [&note_id],
-            |row| row.get(0),
-        );
-
-        match child_count {
-            Ok(count) => {
-                if count > 0 {
-                    // Directory is not empty
-                    reply.error(libc::ENOTEMPTY);
-                    return;
-                }
-            }
-            Err(_) => {
-                reply.error(libc::EIO);
-                return;
-            }
-        }
-
-        // Directory is empty, proceed with deletion
-        let result = self
+        // get the id
+        let id = self
             .db
-            .execute("DELETE FROM notes WHERE id = ?1", [&note_id]);
+            .get_id_from_path(&path)
+            .expect("[ERROR] Unable to extract id from {path}");
+        // NOTE CASCADE on a Foreign Key would be nice here
 
-        match result {
-            Ok(rows_affected) => {
-                if rows_affected > 0 {
-                    // Successfully deleted the directory
-                    // Remove from inode mappings
-                    let dir_path = if parent_path == "/" {
-                        format!("/{dirname}")
-                    } else {
-                        format!("{parent_path}/{dirname}")
-                    };
+        // Get the children
+        let children_ids: Vec<String> = self
+            .db
+            .get_children(&id)
+            .into_iter()
+            .map(|i| i.id.clone())
+            .collect();
 
-                    if let Some(inode) = self.inode_map.remove(&dir_path) {
-                        self.reverse_inode_map.remove(&inode);
-                    }
+        if children_ids.len() == 0 {
+            // Directory is empty, proceed with deletion
+            self.db.delete(&id);
+            // Ask for success
 
-                    // Also remove any index file mappings for this directory
-                    for ext in Self::SUPPORTED_EXTENSIONS {
-                        let index_path = format!("{}/index.{}", dir_path, ext);
-                        if let Some(index_inode) = self.inode_map.remove(&index_path) {
-                            self.reverse_inode_map.remove(&index_inode);
-                        }
-                    }
+            // Successfully deleted the directory
+            // Remove from inode mappings
+            let dir_path = if parent_path == "/" {
+                format!("/{dirname}")
+            } else {
+                format!("{parent_path}/{dirname}")
+            };
 
-                    reply.ok();
-                } else {
-                    // Should not happen since we just queried for it
-                    reply.error(ENOENT);
-                }
+            if let Some(inode) = self.inode_map.remove(&dir_path) {
+                self.reverse_inode_map.remove(&inode);
             }
-            Err(_) => {
-                reply.error(libc::EIO);
-            }
+            reply.ok();
+        } else {
+            reply.error(libc::EIO);
+            return;
         }
     }
 }

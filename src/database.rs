@@ -4,7 +4,6 @@ use uuid::Uuid;
 pub struct Database {
     pub items: HashMap<String, Item>,
 }
-
 #[derive(Clone)]
 pub struct Item {
     pub title: String,
@@ -37,9 +36,7 @@ impl Database {
     pub fn create(&mut self, id: Option<&str>, title: &str, parent_id: Option<&str>) {
         let id = match id {
             Some(id) => id,
-            None => {
-                &generate_uuid()
-            }
+            None => &generate_uuid(),
         };
         let new_item = Item::new(id, title, parent_id);
         self.items.insert(id.to_string(), new_item);
@@ -71,7 +68,7 @@ impl Database {
     }
     /// Deletes an Item from the database
     /// Returns the item like pop
-    fn delete(&mut self, id: &str) -> Option<Item> {
+    pub fn delete(&mut self, id: &str) -> Option<Item> {
         self.items.remove(id)
     }
 

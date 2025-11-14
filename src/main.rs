@@ -1,17 +1,17 @@
 use std::path::PathBuf;
-mod fuse_fs;
 mod database;
-
+mod fuse_fs;
 
 use clap::{Parser, Subcommand};
+use fuser::MountOption;
 
-use crate::{database::Database, fuse_fs::hello};
+use crate::fuse_fs::ExampleFuseFs;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Optional name to operate on
-    name: Option<String>,
+    mountpoint: String,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -30,11 +30,6 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    // You can check the value provided by positional arguments, or option arguments
-    if let Some(name) = cli.name.as_deref() {
-        println!("Value for name: {name}");
-    }
-
     // You can check for the existence of subcommands, and if found use their
     // matches just as you would the top level cmd
     match &cli.command {
@@ -48,5 +43,16 @@ fn main() {
         None => {}
     }
 
-    hello();
+    let fs = match ExampleFuseFs::new() {
+        Ok(fs) => fs,
+        Err(e) => {
+            eprintln!("Failed to open database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut options = vec![MountOption::FSName("fuse_ecample".to_string())];
+    options.push(MountOption::AutoUnmount);
+    options.push(MountOption::AllowRoot);
+    fuser::mount2(fs, cli.mountpoint, &options).unwrap();
 }
