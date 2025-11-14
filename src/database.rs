@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use uuid::Uuid;
 
 pub struct Database {
     pub items: HashMap<String, Item>,
@@ -21,6 +22,10 @@ impl Item {
     }
 }
 
+fn generate_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
 impl Database {
     // Init
     pub fn new() -> Self {
@@ -29,7 +34,13 @@ impl Database {
         };
     }
     // Create
-    pub fn create(&mut self, id: &str, title: &str, parent_id: Option<&str>) {
+    pub fn create(&mut self, id: Option<&str>, title: &str, parent_id: Option<&str>) {
+        let id = match id {
+            Some(id) => id,
+            None => {
+                &generate_uuid()
+            }
+        };
         let new_item = Item::new(id, title, parent_id);
         self.items.insert(id.to_string(), new_item);
     }
@@ -54,7 +65,7 @@ impl Database {
             }
             None => {
                 let title = title.expect("Cannot Update Note that doesn't exist, failed to create new item as title is None");
-                self.create(id, title, parent_id);
+                self.create(Some(id), title, parent_id);
             }
         }
     }
@@ -144,7 +155,6 @@ impl Database {
             None
         }
     }
-
 }
 
 #[cfg(test)]

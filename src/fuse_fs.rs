@@ -1,5 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    error::Error,
+    intrinsics::offset,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -45,17 +47,35 @@ impl ExampleFuseFs {
         }
     }
 
-    fn content_size(&self, path: &str) -> usize {
+    fn get_content(&self, path: &str) -> Option<String> {
         let id = self.db.get_id_from_path(path);
         if let Some(id) = id {
-            match self.db.get_content(&id) {
-                Some(s) => s.len(),
-                None => 0,
-            }
+            self.db.get_content(&id)
         } else {
             eprintln!("[WARNING] Unable to get id for {path}");
-            return 0;
+            return None;
         }
+    }
+
+    fn content_size(&self, path: &str) -> usize {
+        match self.get_content(path) {
+            Some(text) => text.len(),
+            None => {
+                eprintln!("[WARNING] No content found for {path} so returning 0 content size");
+                0
+            }
+        }
+    }
+
+    fn split_parent_path_and_filename(path: &str) -> (String, String) {
+        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
+            let parent = &path[..pos];
+            let name = &path[pos + 1..];
+            (if parent.is_empty() { "/" } else { parent }, name)
+        } else {
+            ("/", &path[..])
+        };
+        return (parent_path.to_string(), filename.to_string());
     }
 
     // Unused
@@ -75,6 +95,26 @@ impl ExampleFuseFs {
         return vec!["1".into(), "2".into(), "3".into()];
     }
     */
+
+    fn get_children(&self, path: &str) -> Vec<(bool, String)> {
+        let mut results: Vec<(bool, String)> = vec![];
+        match self.db.get_id_from_path(path) {
+            Some(id) => {
+                for item in self.db.get_children(&id) {
+                    let count = self.db.get_child_count(&id);
+                    let is_db = count > 0;
+                    results.push((is_db, item.title.clone()));
+                }
+            }
+            None => {
+                eprintln!("[WARNING] Could not find id for path {path}");
+                return vec![];
+            }
+        }
+
+        return results;
+    }
+
 
     fn get_path_from_inode(&self, inode: u64) -> Option<&String> {
         self.reverse_inode_map.get(&inode)
@@ -100,6 +140,24 @@ impl ExampleFuseFs {
             }
         }
         None
+    }
+
+    pub fn get_parent_id_from_parent_path(
+        &self,
+        parent_path: &str,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let parent_note_id = if parent_path == "/" {
+            Ok(None)
+        } else {
+            match self.db.get_id_from_path(&parent_path) {
+                Some(id) => Ok(Some(id)),
+                None => {
+                    // This is an error because the id couldn't be found
+                    Err("Unable to get ID from parent path")?
+                }
+            }
+        };
+        return parent_note_id;
     }
 
     fn is_editor_temp_file(filename: &str) -> bool {
@@ -298,24 +356,15 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Extract the filename and parent path
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
-        } else {
-            ("/", &path[..])
-        };
+        let (parent_path, _filename) = Self::split_parent_path_and_filename(&path);
 
-        // Get parent note ID (None for root level)
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_id_from_path(parent_path) {
-                Some(id) => Some(id),
-                None => {
-                    reply.error(ENOENT);
-                    return;
-                }
+        // Ensure we can Get parent note ID (None for root level)
+        let _parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
             }
         };
 
@@ -384,107 +433,29 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Ignore directories
+        if self.is_dir(&path) {
+            return;
+        }
+
+        // get the content
+        let content = self.get_content(&path);
+
         // Extract the filename and parent path
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
+
+        if let Some(content) = content {
+            let content_bytes = content.as_bytes(); //  note_result.1.as_bytes();
+            let start = offset as usize;
+            if start < content_bytes.len() {
+                reply.data(&content_bytes[start..]);
+            } else {
+                reply.data(&[]);
+            }
+            return;
         } else {
-            ("/", &path[..])
-        };
-
-        // Get parent note ID (None for root level)
-        //
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(parent_path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
-
-        // Handle special case for index files (index.{ext})
-        if filename.starts_with("index.") {
-            if let Some(parent_id) = &parent_note_id {
-                // Look up the parent note to get its content via index file
-                if let Ok(content) = self.db.query_row(
-                    "SELECT content, syntax FROM notes WHERE id = ?1",
-                    [parent_id],
-                    |row| {
-                        let content: String = row.get(0)?;
-                        let syntax: String = row.get(1)?;
-                        Ok((content, syntax))
-                    },
-                ) {
-                    let expected_ext = &content.1;
-                    let expected_index = format!("index.{}", expected_ext);
-
-                    if filename == expected_index {
-                        let content_bytes = content.0.as_bytes();
-                        let start = offset as usize;
-                        if start < content_bytes.len() {
-                            reply.data(&content_bytes[start..]);
-                        } else {
-                            reply.data(&[]);
-                        }
-                        return;
-                    }
-                }
-            }
+            // A file where we cant find content is an error
+            reply.error(ENOENT);
         }
-
-        // Query database for note content (unified schema)
-        let note_query = "SELECT id, content, syntax FROM notes WHERE parent_id IS ?1 AND title = ?2 ORDER BY updated_at DESC LIMIT 1";
-
-        // Try stripping file extension and matching title (for files)
-        if let Some(dot_pos) = filename.rfind('.') {
-            let title_without_ext = &filename[..dot_pos];
-            let requested_ext = &filename[dot_pos + 1..];
-
-            if let Ok(note_result) = self.db.query_row(
-                note_query,
-                rusqlite::params![parent_note_id, title_without_ext],
-                |row| {
-                    let id: String = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let syntax: String = row.get(2)?;
-                    Ok((id, content, syntax))
-                },
-            ) {
-                // Check if this note has children (should be a file for reading)
-                let has_children = self
-                    .db
-                    .query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                        [&note_result.0],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0)
-                    > 0;
-
-                if !has_children {
-                    // This note has no children, so it's a file
-                    // Verify the extension matches the syntax
-                    let expected_ext = &note_result.2;
-                    if requested_ext == expected_ext {
-                        let content_bytes = note_result.1.as_bytes();
-                        let start = offset as usize;
-                        if start < content_bytes.len() {
-                            reply.data(&content_bytes[start..]);
-                        } else {
-                            reply.data(&[]);
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-
-        reply.error(ENOENT);
     }
 
     fn readdir(
@@ -495,6 +466,13 @@ impl Filesystem for ExampleFuseFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        // ino=1 => directory
+        // If it's not a directory, don't list anything
+        if ino != 1 {
+            reply.error(ENOENT);
+            return;
+        }
+
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -503,136 +481,30 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Handle entries that should always be there
         let mut entries = vec![
             (ino, FileType::Directory, ".".to_string()),
             (1, FileType::Directory, "..".to_string()),
         ];
 
-        // Get the note ID for this directory (unified schema)
-        let current_note_id = if path == "/" {
-            None
-        } else {
-            match self.get_parent_folder_id(&path) {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
+        // Get additional Entries from the database
+        for (is_dir, title) in self.get_children(&path) {
+            let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
 
-        // Query all child notes under this directory
-        let child_query =
-            "SELECT id, title, syntax FROM notes WHERE parent_id IS ?1 ORDER BY updated_at DESC";
-
-        // First, collect all the child note data
-        let child_notes: Vec<(String, String, String)> = {
-            if let Ok(mut stmt) = self.db.prepare(child_query) {
-                if let Ok(rows) = stmt.query_map([current_note_id.as_deref()], |row| {
-                    let id: String = row.get(0)?;
-                    let title: String = row.get(1)?;
-                    let syntax: String = row.get(2)?;
-                    Ok((id, title, syntax))
-                }) {
-                    rows.filter_map(|row| row.ok()).collect()
+            if !seen_titles.contains(&title) {
+                seen_titles.insert(title.clone());
+                let entry = if is_dir {
+                    (1, FileType::Directory, title.to_string())
                 } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        };
-
-        // Now process the collected data without holding database borrows
-        for (note_id, title, syntax) in child_notes {
-            // Check if this note has children to determine if it's a directory
-            let has_children = self
-                .db
-                .query_row(
-                    "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                    [&note_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap_or(0)
-                > 0;
-
-            if has_children {
-                // This note has children, so it's a directory
-                let full_path = if path == "/" {
-                    format!("/{title}")
-                } else {
-                    format!("{path}/{title}")
+                    (2, FileType::RegularFile, title.to_string())
                 };
-                let inode = self.get_or_create_inode(&full_path);
-                entries.push((inode, FileType::Directory, title.clone()));
-
-                // Pre-create inode for index file (for future access when subdirectory is listed)
-                let extension = &syntax;
-                let index_filename = format!("index.{}", extension);
-                let index_path = if path == "/" {
-                    format!("/{title}/{index_filename}")
-                } else {
-                    format!("{path}/{title}/{index_filename}")
-                };
-                let _index_inode = self.get_or_create_inode(&index_path);
-                // Note: We don't add the index file to the current directory listing
-                // It will be shown when the subdirectory is listed
-            } else {
-                // This note has no children, so it's a file
-                let extension = &syntax;
-                let filename = format!("{}.{}", title, extension);
-                let full_path = if path == "/" {
-                    format!("/{filename}")
-                } else {
-                    format!("{path}/{filename}")
-                };
-                let inode = self.get_or_create_inode(&full_path);
-                entries.push((inode, FileType::RegularFile, filename));
+                entries.push(entry);
             }
         }
 
-        // If this directory corresponds to a note with content, add the index file
-        if let Some(note_id) = &current_note_id {
-            if let Ok(note_info) = self.db.query_row(
-                "SELECT title, syntax, content FROM notes WHERE id = ?1",
-                [note_id],
-                |row| {
-                    let title: String = row.get(0)?;
-                    let syntax: String = row.get(1)?;
-                    let content: String = row.get(2)?;
-                    Ok((title, syntax, content))
-                },
-            ) {
-                // Only add index file if the note has content
-                if !note_info.2.is_empty() {
-                    let extension = &note_info.1;
-                    let index_filename = format!("index.{}", extension);
-                    let index_path = if path == "/" {
-                        format!("/{index_filename}")
-                    } else {
-                        format!("{path}/{index_filename}")
-                    };
-                    let index_inode = self.get_or_create_inode(&index_path);
-                    entries.push((index_inode, FileType::RegularFile, index_filename));
-                }
-            }
-        }
-
-        // Handle path conflicts - if there are duplicate titles, favor the most recent based on updated_at
-        let mut seen_titles = std::collections::HashSet::new();
-        let mut unique_entries = Vec::new();
-
-        for entry in entries {
-            if entry.2 == "." || entry.2 == ".." {
-                unique_entries.push(entry);
-            } else if !seen_titles.contains(&entry.2) {
-                seen_titles.insert(entry.2.clone());
-                unique_entries.push(entry);
-            }
-        }
-
-        for (i, entry) in unique_entries.into_iter().enumerate().skip(offset as usize) {
-            if reply.add(entry.0, (i + 1) as i64, entry.1, &entry.2) {
+        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
+            // i + 1 means the index of the next entry
+            if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
                 break;
             }
         }
@@ -675,14 +547,12 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get or create the note for this folder
-        let _note_id = match self.get_or_create_note(&parent_path, folder_name, "", "md") {
-            Ok(id) => id,
-            Err(_) => {
-                reply.error(libc::EIO);
-                return;
-            }
-        };
+        // Get the id of the parent item
+        let id = self.db.get_id_from_path(&parent_path).expect("Unable to find id for the directory {parent_path}");
+
+        // Create the note
+        self.db.create(None, folder_name, Some(&id));
+
 
         // Use the note_id (either existing or newly created) for further operations
         {

@@ -8,4 +8,4 @@ clap = { version = "4.5.51", features = ["derive"] }
 fuser = "0.16.0"
 libc = "0.2.177"
 rusqlite = "0.37.0"
-uuid = "1.18.1"
+uuid = { version = "1.10.0", features = ["v4"] }
