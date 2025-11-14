@@ -68,8 +68,16 @@ impl ExampleFuseFs {
         match self.get_content(path) {
             Some(text) => text.len(),
             None => {
-                eprintln!("[WARNING] No content found for {path} so returning 0 content size");
-                0
+                if self.is_dir(path) {
+                    // Directories have no content, which is expected
+                    0
+                } else if !Self::is_system_file(path) {
+                    eprintln!("[WARNING] No content found for file {path}");
+                    0
+                } else {
+                    // System files that don't exist - no warning needed
+                    0
+                }
             }
         }
     }
@@ -184,11 +192,23 @@ impl ExampleFuseFs {
         let filename = path.split('/').last().unwrap_or(path);
         
         // Common system files that programs try to access
+        
+        // Shared libraries
         filename.ends_with(".so") || 
         filename.ends_with(".so.1") ||
         filename.ends_with(".so.6") ||
         filename == "glibc-hwcaps" ||
-        filename.starts_with("lib") && filename.contains(".so")
+        filename.starts_with("lib") && filename.contains(".so") ||
+        
+        // Filesystem metadata files
+        filename == ".Trash" ||
+        filename.starts_with(".Trash-") ||
+        filename == "BDMV" ||
+        filename == ".xdg-volume-info" ||
+        filename == "autorun.inf" ||
+        filename == ".hidden" ||
+        filename == "System Volume Information" ||
+        filename == "$RECYCLE.BIN"
     }
     
     fn is_editor_temp_file(filename: &str) -> bool {
@@ -296,6 +316,8 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
+        
+        eprintln!("[DEBUG] lookup: parent={}, name={}", parent, name_str);
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -312,9 +334,10 @@ impl Filesystem for ExampleFuseFs {
         } else {
             format!("{parent_path}/{name_str}")
         };
-
-        // Is it a directory
-        let is_dir = self.is_dir(&full_path);
+        
+        // Check if this path exists in our database
+        let path_exists = self.db.get_id_from_path(&full_path).is_some();
+        eprintln!("[DEBUG] lookup: full_path={}, exists_in_db={}", full_path, path_exists);
 
         // Handle editor temporary files with synthetic attributes
         if Self::is_editor_temp_file(name_str) {
@@ -346,6 +369,16 @@ impl Filesystem for ExampleFuseFs {
             reply.entry(&TTL, &attr, 0);
             return;
         }
+        
+        // Check if the file/directory exists in the database
+        if !path_exists {
+            eprintln!("[DEBUG] lookup: path {} not found in database, returning ENOENT", full_path);
+            reply.error(ENOENT);
+            return;
+        }
+        
+        // Is it a directory
+        let is_dir = self.is_dir(&full_path);
 
         if is_dir {
             // This note has children, so it's a directory
@@ -397,6 +430,7 @@ impl Filesystem for ExampleFuseFs {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+        eprintln!("[DEBUG] getattr: ino={}", ino);
         if ino == 1 {
             // Root directory
             let attr = FileAttr {
@@ -638,14 +672,22 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get the id of the parent item
-        let id = self
-            .db
-            .get_id_from_path(&parent_path)
-            .expect("Unable to find id for the directory {parent_path}");
+        // Get parent ID - None for root, Some(id) for other paths
+        let parent_id = if parent_path == "/" {
+            None
+        } else {
+            match self.db.get_id_from_path(&parent_path) {
+                Some(id) => Some(id),
+                None => {
+                    eprintln!("Unable to find id for the directory {parent_path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
 
         // Create the note
-        self.db.create(None, folder_name, Some(&id));
+        self.db.create(None, folder_name, parent_id.as_deref());
 
         // Use the note_id (either existing or newly created) for further operations
         {
@@ -697,9 +739,9 @@ impl Filesystem for ExampleFuseFs {
         _req: &Request,
         parent: u64,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: fuser::ReplyCreate,
     ) {
         let file_name = match name.to_str() {
@@ -709,6 +751,9 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
+        
+        eprintln!("[DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}", 
+                 parent, file_name, mode, flags);
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -764,12 +809,40 @@ impl Filesystem for ExampleFuseFs {
         let base = path.file_stem().map(|s| s.to_string_lossy().into_owned());
         let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
         */
-        let id = self
-            .db
-            .get_id_from_path(&parent_path)
-            .expect("Cannot get id for path {parent_path}");
+        
+        // Get parent ID - None for root, Some(id) for other paths
+        let parent_id = if parent_path == "/" {
+            None
+        } else {
+            match self.db.get_id_from_path(&parent_path) {
+                Some(id) => Some(id),
+                None => {
+                    eprintln!("Cannot get id for parent path {parent_path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
 
-        self.db.create(None, file_name, Some(&id));
+        self.db.create(None, file_name, parent_id.as_deref());
+        
+        // Debug: verify the file was created
+        let created_path = if parent_path == "/" {
+            format!("/{file_name}")
+        } else {
+            format!("{parent_path}/{file_name}")
+        };
+        
+        if self.db.get_id_from_path(&created_path).is_none() {
+            eprintln!("[DEBUG] File {created_path} was not found after creation!");
+            eprintln!("[DEBUG] Parent path: {parent_path}, parent_id: {:?}", parent_id);
+            
+            // List all items in database for debugging
+            eprintln!("[DEBUG] All items in database:");
+            for (id, item) in self.db.get_all() {
+                eprintln!("  ID: {}, Title: {}, Parent: {:?}", id, item.title, item.parent_id);
+            }
+        }
 
         /*
         If this panics we could instead:
@@ -847,6 +920,7 @@ impl Filesystem for ExampleFuseFs {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
+        eprintln!("[DEBUG] write called: ino={}, offset={}, data_len={}", ino, offset, data.len());
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -875,10 +949,18 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Get the id of this note
-        let id = self
-            .db
-            .get_id_from_path(&path)
-            .expect("Unable to get id for {path}");
+        let id = match self.db.get_id_from_path(&path) {
+            Some(id) => id,
+            None => {
+                eprintln!("[ERROR] Unable to get id for path: {}", path);
+                eprintln!("[DEBUG] Looking for path components:");
+                for component in path.split('/').filter(|s| !s.is_empty()) {
+                    eprintln!("  - {}", component);
+                }
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         // Confirm this is not a directory
         if self.is_dir(&path) {
@@ -888,9 +970,7 @@ impl Filesystem for ExampleFuseFs {
 
         // Get the content
         // TODO consider that every look up is expensive
-        let content = self
-            .get_content(&path)
-            .expect("Unable to get content for {path}");
+        let content = self.get_content(&path).unwrap_or_default();
 
         // Handle the write operation
         let new_content = if offset == 0 {
@@ -920,29 +1000,29 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Update the note's content
-        let now = Self::current_timestamp();
-        // Something like this
-        /*
-        match self.db.execute(
-            "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![&new_content, &now, &note_result.0],
-        ) {
+        match self.db.update_content(&id, &new_content) {
             Ok(_) => {
                 reply.written(data.len() as u32);
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("Failed to update content: {}", e);
                 reply.error(libc::EIO);
             }
         }
-        */
-        // return;
-        // reply.error(ENOENT);
     }
 
     /// Handle file opening operations (unified schema)
     ///
     /// This method verifies that a file exists before allowing it to be opened.
-    fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: fuser::ReplyOpen) {
+    fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: fuser::ReplyOpen) {
+        eprintln!("[DEBUG] open: ino={}, flags={:#x}", ino, flags);
+        
+        // Check if O_CREAT flag is set (0x40 or 0x100)
+        const O_CREAT: i32 = 0x40;
+        if flags & O_CREAT != 0 {
+            eprintln!("[DEBUG] open called with O_CREAT flag - file creation through open!");
+        }
+        
         // Verify that the inode exists and corresponds to a valid file
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
@@ -966,7 +1046,9 @@ impl Filesystem for ExampleFuseFs {
         };
 
         if !self.db.get_id_from_path(&path).is_some() {
-            eprintln!("[ERROR] Could not find {path} in the database, which is unexpected");
+            if !Self::is_system_file(&path) {
+                eprintln!("[ERROR] Could not find {path} in the database, which is unexpected");
+            }
             reply.error(ENOENT);
             return;
         }
@@ -1378,6 +1460,92 @@ impl Filesystem for ExampleFuseFs {
     /// - Deletes the most recent note (based on updated_at) if duplicates exist
     /// - Updates inode mappings to reflect the deletion
     /// - Required for proper file manager and shell integration
+    /// Handle mknod operations - another way files can be created
+    /// Some systems use mknod instead of create for file creation
+    fn mknod(
+        &mut self,
+        _req: &Request,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        eprintln!("[DEBUG] mknod called: parent={}, name={:?}, mode={:#o}", 
+                 parent, name, mode);
+        
+        let file_name = match name.to_str() {
+            Some(s) => s,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+        
+        // Get parent path
+        let parent_path = match self.get_path_from_inode(parent) {
+            Some(path) => path.clone(),
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        
+        // Get parent ID - None for root, Some(id) for other paths
+        let parent_id = if parent_path == "/" {
+            None
+        } else {
+            match self.db.get_id_from_path(&parent_path) {
+                Some(id) => Some(id),
+                None => {
+                    eprintln!("Cannot get id for parent path {parent_path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
+        
+        // Create the file in database
+        self.db.create(None, file_name, parent_id.as_deref());
+        
+        // Create the full path for the new file
+        let full_path = if parent_path == "/" {
+            format!("/{file_name}")
+        } else {
+            format!("{parent_path}/{file_name}")
+        };
+        
+        // Create inode for the new file
+        let inode = self.get_or_create_inode(&full_path);
+        
+        // Get current timestamp for attributes
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let attr = FileAttr {
+            ino: inode,
+            size: 0, // Empty file initially
+            blocks: 0,
+            atime: UNIX_EPOCH + Duration::from_secs(now),
+            mtime: UNIX_EPOCH + Duration::from_secs(now),
+            ctime: UNIX_EPOCH + Duration::from_secs(now),
+            crtime: UNIX_EPOCH + Duration::from_secs(now),
+            kind: FileType::RegularFile,
+            perm: (mode & 0o777) as u16,
+            nlink: 1,
+            uid: 501,
+            gid: 20,
+            rdev: 0,
+            flags: 0,
+            blksize: 512,
+        };
+        
+        reply.entry(&TTL, &attr, 0);
+    }
+    
     fn rmdir(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
         let dirname = match name.to_str() {
             Some(n) => n,

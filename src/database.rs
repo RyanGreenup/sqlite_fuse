@@ -9,6 +9,7 @@ pub struct Item {
     pub title: String,
     pub id: String,
     pub parent_id: Option<String>,
+    pub content: Option<String>,
 }
 
 impl Item {
@@ -17,6 +18,7 @@ impl Item {
             title: title.to_string(),
             id: id.to_string(),
             parent_id: parent_id.map(|s| s.to_string()),
+            content: None,
         };
     }
 }
@@ -31,11 +33,16 @@ impl Default for Database {
             items: HashMap::new(),
         };
         
-        // Add default entries
+        // Add default entries with predefined IDs
         db.create(Some("root"), "Home", None);
         db.create(Some("documents"), "Documents", Some("root"));
         db.create(Some("projects"), "Projects", Some("root"));
         db.create(Some("readme"), "README.txt", Some("documents"));
+        
+        // Add some content to the README file
+        if let Some(readme) = db.items.get_mut("readme") {
+            readme.content = Some("This is a test file in the FUSE filesystem.".to_string());
+        }
         
         db
     }
@@ -49,11 +56,11 @@ impl Database {
     // Create
     pub fn create(&mut self, id: Option<&str>, title: &str, parent_id: Option<&str>) {
         let id = match id {
-            Some(id) => id,
-            None => &generate_uuid(),
+            Some(id) => id.to_string(),
+            None => generate_uuid(),
         };
-        let new_item = Item::new(id, title, parent_id);
-        self.items.insert(id.to_string(), new_item);
+        let new_item = Item::new(&id, title, parent_id);
+        self.items.insert(id.clone(), new_item);
     }
     // Read
     pub fn get(&self, id: &str) -> Option<&Item> {
@@ -77,6 +84,19 @@ impl Database {
             None => {
                 let title = title.expect("Cannot Update Note that doesn't exist, failed to create new item as title is None");
                 self.create(Some(id), title, parent_id);
+            }
+        }
+    }
+    
+    // Update content
+    pub fn update_content(&mut self, id: &str, content: &str) -> Result<(), String> {
+        match self.items.get_mut(id) {
+            Some(item) => {
+                item.content = Some(content.to_string());
+                Ok(())
+            }
+            None => {
+                Err(format!("Item with id {} not found", id))
             }
         }
     }
@@ -130,8 +150,14 @@ impl Database {
     }
 
     pub fn get_content(&self, id: &str) -> Option<String> {
-        if self.get_child_count(id) > 0 {
-            Some(String::from("Foo Bar Baz"))
+        if let Some(item) = self.items.get(id) {
+            if self.get_child_count(id) == 0 {
+                // Files (leaf nodes) can have content
+                item.content.clone().or_else(|| Some(String::new()))
+            } else {
+                // Directories have no content
+                None
+            }
         } else {
             None
         }
