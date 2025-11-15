@@ -4,6 +4,8 @@ use crate::fuse_fs::ExampleFuseFs;
 
 use clap::{Parser, Subcommand};
 use fuser::MountOption;
+use chrono_tz::Tz;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -15,6 +17,10 @@ struct Cli {
     /// Initialize the database with schema (required for first-time setup)
     #[arg(long)]
     init_db: bool,
+
+    /// Timezone for database timestamps (default: Australia/Sydney)
+    #[arg(long, default_value = "Australia/Sydney")]
+    timezone: String,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -73,9 +79,18 @@ fn main() {
             con
         }
     };
-    // let db = Database::new(con, Some(chrono_tz::Australia::Sydney));
 
-    let fs = match ExampleFuseFs::new(con, Some(chrono_tz::Australia::Sydney)) {
+    // Parse the timezone
+    let timezone = match Tz::from_str(&cli.timezone) {
+        Ok(tz) => Some(tz),
+        Err(e) => {
+            eprintln!("Invalid timezone '{}': {}", cli.timezone, e);
+            eprintln!("Using default timezone Australia/Sydney");
+            Some(chrono_tz::Australia::Sydney)
+        }
+    };
+
+    let fs = match ExampleFuseFs::new(con, timezone) {
         Ok(fs) => fs,
         Err(e) => {
             eprintln!("Failed to open database: {e}");
