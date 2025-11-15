@@ -515,6 +515,9 @@ impl Filesystem for ExampleFuseFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        eprintln!("[DEBUG] readdir: ino={}, offset={}", ino, offset);
+
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -523,33 +526,31 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get the folder id (special handling for root)
-        let id = if path == "/" {
-            // For root directory, we'll use a special handling
+        // Check if it's actually a directory before reading it
+        let folder_id = if path == "/" {
+            // Root directory - special case
             None
         } else {
             match self.db.get_folder_id_by_path(&path) {
-                Ok(maybe_id) => match maybe_id {
-                    Some(id) => Some(id),
-                    None => {
-                        eprintln!("15 Unable to get folder for {path}");
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
+                Ok(Some(id)) => Some(id),
+                Ok(None) => {
+                    // Not a directory - cannot readdir on a file
+                    eprintln!("[ERROR] readdir: Attempted to readdir on non-directory {}", path);
+                    reply.error(libc::ENOTDIR);
+                    return;
+                }
                 Err(e) => {
-                    eprintln!(" 16 Unable to get folder for {path}: {e}");
+                    eprintln!("[ERROR] readdir: Database error checking for folder {}: {}", path, e);
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // Determine parent inode
+        // Determine parent inode for ".." entry
         let parent_ino = if path == "/" {
             1 // Root's parent is itself
         } else {
-            // Find parent path and get its inode
             if let Some(pos) = path.rfind('/') {
                 let parent_path = if pos == 0 { "/" } else { &path[..pos] };
                 self.inode_map.get(parent_path).copied().unwrap_or(1)
@@ -558,101 +559,100 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Handle entries that should always be there
+        // Start with standard directory entries
         let mut entries = vec![
             (ino, FileType::Directory, ".".to_string()),
             (parent_ino, FileType::Directory, "..".to_string()),
         ];
 
-        // Get additional Entries from the database
-        let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
-        // TODO this should be a command line argument
-        // TODO the underlying database should filter this for every query
+        // Get directory contents from database
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
+        let mut seen_names: HashSet<String> = HashSet::new();
 
-        // Handle root directory differently
-        let db_titles = if path == "/" {
-            // For root, get all top-level folders and notes
-            let mut files = Vec::new();
-
+        // Handle root vs non-root directories
+        if path == "/" {
+            // Root directory - get top-level folders and notes
+            
             // Get root folders
             match self.db.list_folders_by_parent(None) {
                 Ok(folders) => {
                     for folder in folders {
-                        files.push(crate::database::FileType::Directory {
-                            path: format!("/{}", folder.title),
-                        });
+                        let name = folder.title.clone();
+                        if !seen_names.contains(&name) {
+                            seen_names.insert(name.clone());
+                            let folder_path = format!("/{}", name);
+                            let child_ino = self.get_or_create_inode(&folder_path);
+                            entries.push((child_ino, FileType::Directory, name));
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("17 [ERROR] Unable to get root folders: {e}");
+                    eprintln!("[ERROR] readdir: Unable to get root folders: {}", e);
                     reply.error(ENOENT);
                     return;
                 }
             }
 
             // Get root notes
-            match self.db.list_notes_by_parent(None, USER_ID) {
+            match self.db.list_notes_by_parent(None, todo_user_id) {
                 Ok(notes) => {
                     for note in notes {
-                        files.push(crate::database::FileType::File {
-                            path: format!("/{}.{}", note.title, note.syntax),
-                        });
+                        let filename = format!("{}.{}", note.title, note.syntax);
+                        if !seen_names.contains(&filename) {
+                            seen_names.insert(filename.clone());
+                            let file_path = format!("/{}", filename);
+                            let child_ino = self.get_or_create_inode(&file_path);
+                            entries.push((child_ino, FileType::RegularFile, filename));
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("18 [ERROR] Unable to get root notes: {e}");
+                    eprintln!("[ERROR] readdir: Unable to get root notes: {}", e);
                     reply.error(ENOENT);
                     return;
                 }
             }
-
-            files
         } else {
-            // For non-root folders, use the existing recursive function
-            match self
-                .db
-                .get_folder_contents_recursive(&id.unwrap(), USER_ID)
-            {
-                Ok(titles) => titles,
+            // Non-root directory - get contents recursively
+            match self.db.get_folder_contents_recursive(&folder_id.unwrap(), todo_user_id) {
+                Ok(contents) => {
+                    for item in contents {
+                        let (is_dir, full_path) = match item {
+                            crate::database::FileType::File { path } => (false, path),
+                            crate::database::FileType::Directory { path } => (true, path),
+                        };
+
+                        // Extract just the filename/dirname from the full path
+                        let basename = full_path.split('/').last().unwrap_or(&full_path).to_string();
+                        
+                        if !seen_names.contains(&basename) {
+                            seen_names.insert(basename.clone());
+                            let child_ino = self.get_or_create_inode(&full_path);
+                            let file_type = if is_dir {
+                                FileType::Directory
+                            } else {
+                                FileType::RegularFile
+                            };
+                            entries.push((child_ino, file_type, basename));
+                        }
+                    }
+                }
                 Err(e) => {
-                    eprintln!("19 [ERROR] Unable to get titles for folder at {path}: {e}");
+                    eprintln!("[ERROR] readdir: Unable to get folder contents for {}: {}", path, e);
                     reply.error(ENOENT);
                     return;
                 }
             }
-        };
-
-        for file in db_titles {
-            let (is_dir, path) = match file {
-                crate::database::FileType::File { path } => (false, path),
-                crate::database::FileType::Directory { path } => (true, path),
-            };
-
-            // Path is like /foo/bar/baz, we need just baz
-            let basename = path.split('/').last().unwrap_or(&path).to_string();
-
-            if !seen_titles.contains(&basename) {
-                seen_titles.insert(basename.clone());
-
-                // Get or create inode for the child
-                let child_ino = self.get_or_create_inode(&path);
-
-                let file_type = if is_dir {
-                    FileType::Directory
-                } else {
-                    FileType::RegularFile
-                };
-
-                entries.push((child_ino, file_type, basename));
-            }
         }
 
+        // Return entries starting from the requested offset
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-            // i + 1 means the index of the next entry
+            // i + 1 is the offset for the next entry
             if reply.add(entry.0, (i + 1) as i64, entry.1, entry.2) {
-                break;
+                break; // Buffer full
             }
         }
+        
         reply.ok();
     }
 
