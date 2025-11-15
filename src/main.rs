@@ -44,7 +44,16 @@ fn main() {
 
     let con = match cli.database {
         Some(path) => rusqlite::Connection::open(path).expect("Unable to Connect to Database"),
-        None => rusqlite::Connection::open_in_memory().expect("Unable to Connect to Database"),
+        None => {
+            let con = rusqlite::Connection::open_in_memory().expect("Unable to Connect to Database");
+
+            // Read and execute the init.sql file
+            let init_sql = include_str!("../sql/init.sql");
+            con.execute_batch(init_sql)
+                .expect("Failed to initialize database");
+
+            con
+        }
     };
     // let db = Database::new(con, Some(chrono_tz::Australia::Sydney));
 
