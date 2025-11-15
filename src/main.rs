@@ -1,12 +1,9 @@
-use std::path::PathBuf;
 mod database;
 mod fuse_fs;
-use crate::{database::Database, fuse_fs::ExampleFuseFs};
+use crate::fuse_fs::ExampleFuseFs;
 
 use clap::{Parser, Subcommand};
 use fuser::MountOption;
-
-use crate::database::Database;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -55,7 +52,7 @@ fn main() {
         }
     };
 
-    let mut options = vec![MountOption::FSName("fuse_ecample".to_string())];
+    let options = vec![MountOption::FSName("fuse_ecample".to_string())];
     // These require specific behaviour in  /etc/fuse.conf because umount requires root
     // root is not the user so it gets tricky
     // options.push(MountOption::AutoUnmount);

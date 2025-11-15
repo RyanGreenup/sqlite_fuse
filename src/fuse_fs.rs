@@ -1233,13 +1233,31 @@ impl Filesystem for ExampleFuseFs {
             // TODO should we bother with this?
             let new_content = String::from_utf8_lossy(&content_bytes).to_string();
             //
-            self.db.update_note(
+            let _success = match self.db.update_note(
                 &id,
                 &title,
                 note.abstract_text.as_deref(),
                 &new_content,
                 &syntax,
-            );
+            ) {
+                Ok(is_success) => {
+                    if is_success {
+                        is_success
+                    } else {
+                        eprintln!("[ERROR] (fn setattr) Unable to update {path} with id={id}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn setattr) Sql error trying to write to {path} with id={id}"
+                    );
+                    eprintln!("{e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
         }
 
         let size = note.content.len() as u64;
