@@ -534,7 +534,7 @@ impl Filesystem for ExampleFuseFs {
             let basename = path.split('/').last().unwrap_or(&path).to_string();
 
             if !seen_titles.contains(&basename) {
-                seen_titles.insert(path.clone());
+                seen_titles.insert(basename.clone());
 
                 // Get or create inode for the child
                 let child_ino = self.get_or_create_inode(&path);
@@ -545,7 +545,7 @@ impl Filesystem for ExampleFuseFs {
                     FileType::RegularFile
                 };
 
-                entries.push((child_ino, file_type, path.to_string()));
+                entries.push((child_ino, file_type, basename));
             }
         }
 
