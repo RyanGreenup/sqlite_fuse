@@ -347,14 +347,18 @@ impl Database {
         file_iter.collect()
     }
 
-    pub fn get_child_count(&self, parent_id: Option<&str>, user_id: Option<&str>) -> Result<(usize, usize)> {
+    pub fn get_child_count(
+        &self,
+        parent_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<(usize, usize)> {
         let (folder_count, note_count) = match parent_id {
             Some(pid) => {
                 // Count folders with this parent
                 let folder_count: i64 = self.connection.query_row(
                     "SELECT COUNT(*) FROM folders WHERE parent_id = ?1",
                     [pid],
-                    |row| row.get(0)
+                    |row| row.get(0),
                 )?;
 
                 // Count notes with this parent (optionally filtered by user)
@@ -362,23 +366,23 @@ impl Database {
                     Some(uid) => self.connection.query_row(
                         "SELECT COUNT(*) FROM notes WHERE parent_id = ?1 AND user_id = ?2",
                         params![pid, uid],
-                        |row| row.get(0)
+                        |row| row.get(0),
                     )?,
                     None => self.connection.query_row(
                         "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
                         [pid],
-                        |row| row.get(0)
-                    )?
+                        |row| row.get(0),
+                    )?,
                 };
 
                 (folder_count, note_count)
-            },
+            }
             None => {
                 // Count root folders (no parent)
                 let folder_count: i64 = self.connection.query_row(
                     "SELECT COUNT(*) FROM folders WHERE parent_id IS NULL",
                     [],
-                    |row| row.get(0)
+                    |row| row.get(0),
                 )?;
 
                 // Count root notes (optionally filtered by user)
@@ -386,13 +390,13 @@ impl Database {
                     Some(uid) => self.connection.query_row(
                         "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL AND user_id = ?1",
                         [uid],
-                        |row| row.get(0)
+                        |row| row.get(0),
                     )?,
                     None => self.connection.query_row(
                         "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL",
                         [],
-                        |row| row.get(0)
-                    )?
+                        |row| row.get(0),
+                    )?,
                 };
 
                 (folder_count, note_count)
@@ -1573,66 +1577,108 @@ mod tests {
         let db = setup_test_database();
         let user_id = "count_test_user";
         let other_user = "other_count_user";
-        
+
         // Create folder structure
-        let parent_folder_id = db.create_folder("Parent", None)
+        let parent_folder_id = db
+            .create_folder("Parent", None)
             .expect("Failed to create parent folder");
-        let child_folder1_id = db.create_folder("Child1", Some(&parent_folder_id))
+        let child_folder1_id = db
+            .create_folder("Child1", Some(&parent_folder_id))
             .expect("Failed to create child folder 1");
-        let child_folder2_id = db.create_folder("Child2", Some(&parent_folder_id))
+        let child_folder2_id = db
+            .create_folder("Child2", Some(&parent_folder_id))
             .expect("Failed to create child folder 2");
 
         // Create notes in parent folder for different users
-        db.create_note("note1", "Note 1", None, "Content 1", "md", Some(&parent_folder_id), user_id)
-            .expect("Failed to create note 1");
-        db.create_note("note2", "Note 2", None, "Content 2", "txt", Some(&parent_folder_id), user_id)
-            .expect("Failed to create note 2");
-        db.create_note("note3", "Note 3", None, "Content 3", "md", Some(&parent_folder_id), other_user)
-            .expect("Failed to create note 3 for other user");
+        db.create_note(
+            "note1",
+            "Note 1",
+            None,
+            "Content 1",
+            "md",
+            Some(&parent_folder_id),
+            user_id,
+        )
+        .expect("Failed to create note 1");
+        db.create_note(
+            "note2",
+            "Note 2",
+            None,
+            "Content 2",
+            "txt",
+            Some(&parent_folder_id),
+            user_id,
+        )
+        .expect("Failed to create note 2");
+        db.create_note(
+            "note3",
+            "Note 3",
+            None,
+            "Content 3",
+            "md",
+            Some(&parent_folder_id),
+            other_user,
+        )
+        .expect("Failed to create note 3 for other user");
 
         // Create notes at root level
         db.create_note("root1", "Root 1", None, "Root content", "md", None, user_id)
             .expect("Failed to create root note 1");
-        db.create_note("root2", "Root 2", None, "Root content", "org", None, other_user)
-            .expect("Failed to create root note 2 for other user");
+        db.create_note(
+            "root2",
+            "Root 2",
+            None,
+            "Root content",
+            "org",
+            None,
+            other_user,
+        )
+        .expect("Failed to create root note 2 for other user");
 
         // Test counting children of parent folder with specific user
-        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), Some(user_id))
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&parent_folder_id), Some(user_id))
             .expect("Failed to get child count for specific user");
         assert_eq!(folder_count, 2); // Child1, Child2
-        assert_eq!(note_count, 2);   // note1, note2 (only for user_id)
+        assert_eq!(note_count, 2); // note1, note2 (only for user_id)
 
         // Test counting children of parent folder with other user
-        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), Some(other_user))
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&parent_folder_id), Some(other_user))
             .expect("Failed to get child count for other user");
         assert_eq!(folder_count, 2); // Child1, Child2 (folders are shared)
-        assert_eq!(note_count, 1);   // note3 (only for other_user)
+        assert_eq!(note_count, 1); // note3 (only for other_user)
 
         // Test counting children of parent folder without user filter
-        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), None)
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&parent_folder_id), None)
             .expect("Failed to get child count without user filter");
         assert_eq!(folder_count, 2); // Child1, Child2
-        assert_eq!(note_count, 3);   // note1, note2, note3 (all notes)
+        assert_eq!(note_count, 3); // note1, note2, note3 (all notes)
 
         // Test counting children of empty folder
-        let empty_folder_id = db.create_folder("Empty", None)
+        let empty_folder_id = db
+            .create_folder("Empty", None)
             .expect("Failed to create empty folder");
-        let (folder_count, note_count) = db.get_child_count(Some(&empty_folder_id), Some(user_id))
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&empty_folder_id), Some(user_id))
             .expect("Failed to get empty folder child count");
         assert_eq!(folder_count, 0);
         assert_eq!(note_count, 0);
 
         // Test counting root level items with specific user
-        let (folder_count, note_count) = db.get_child_count(None, Some(user_id))
+        let (folder_count, note_count) = db
+            .get_child_count(None, Some(user_id))
             .expect("Failed to get root count for specific user");
         assert_eq!(folder_count, 2); // Parent, Empty (folders are not user-specific)
-        assert_eq!(note_count, 1);   // root1 (only for user_id)
+        assert_eq!(note_count, 1); // root1 (only for user_id)
 
         // Test counting root level items without user filter
-        let (folder_count, note_count) = db.get_child_count(None, None)
+        let (folder_count, note_count) = db
+            .get_child_count(None, None)
             .expect("Failed to get root count without user filter");
         assert_eq!(folder_count, 2); // Parent, Empty
-        assert_eq!(note_count, 2);   // root1, root2 (all root notes)
+        assert_eq!(note_count, 2); // root1, root2 (all root notes)
     }
 
     #[test]
@@ -1641,34 +1687,47 @@ mod tests {
         let user_id = "edge_test_user";
 
         // Test with non-existent folder ID
-        let (folder_count, note_count) = db.get_child_count(Some("non_existent_id"), Some(user_id))
+        let (folder_count, note_count) = db
+            .get_child_count(Some("non_existent_id"), Some(user_id))
             .expect("Failed to get count for non-existent folder");
         assert_eq!(folder_count, 0);
         assert_eq!(note_count, 0);
 
         // Test with non-existent user ID
-        let folder_id = db.create_folder("Test", None)
+        let folder_id = db
+            .create_folder("Test", None)
             .expect("Failed to create test folder");
-        db.create_note("test_note", "Test", None, "Content", "md", Some(&folder_id), user_id)
-            .expect("Failed to create test note");
+        db.create_note(
+            "test_note",
+            "Test",
+            None,
+            "Content",
+            "md",
+            Some(&folder_id),
+            user_id,
+        )
+        .expect("Failed to create test note");
 
-        let (folder_count, note_count) = db.get_child_count(Some(&folder_id), Some("non_existent_user"))
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&folder_id), Some("non_existent_user"))
             .expect("Failed to get count for non-existent user");
         assert_eq!(folder_count, 1); // Folders are not user-specific, so we created one above
-        assert_eq!(note_count, 0);   // No notes for this user
+        assert_eq!(note_count, 0); // No notes for this user
 
         // Test deeply nested structure
         let mut current_parent = Some(folder_id.clone());
         for i in 1..=3 {
-            let child_id = db.create_folder(&format!("Level{}", i), current_parent.as_deref())
+            let child_id = db
+                .create_folder(&format!("Level{}", i), current_parent.as_deref())
                 .expect("Failed to create nested folder");
             current_parent = Some(child_id);
         }
 
         // The original folder should have 1 child (Level1)
-        let (folder_count, note_count) = db.get_child_count(Some(&folder_id), Some(user_id))
+        let (folder_count, note_count) = db
+            .get_child_count(Some(&folder_id), Some(user_id))
             .expect("Failed to get count for nested structure");
         assert_eq!(folder_count, 1); // Level1
-        assert_eq!(note_count, 1);   // test_note
+        assert_eq!(note_count, 1); // test_note
     }
 }
