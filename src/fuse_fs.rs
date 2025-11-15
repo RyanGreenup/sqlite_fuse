@@ -212,7 +212,7 @@ impl Filesystem for ExampleFuseFs {
 
         // First, check if it's a folder/directory
         match self.db.get_folder_id_by_path(&full_path) {
-            Ok(Some(folder_id)) => {
+            Ok(Some(_folder_id)) => {
                 // It's a directory
                 let inode = self.get_or_create_inode(&full_path);
                 let attr = FileAttr {
@@ -1427,6 +1427,8 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        eprintln!("[DEBUG] rename: {} -> {}", old_name, new_name);
+
         // Get parent paths
         let parent_path = match self.get_path_from_inode(parent) {
             Some(path) => path.clone(),
@@ -1444,168 +1446,139 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        let new_parent_id = if parent_path == "/" {
+        // Construct old and new paths
+        let old_path = if parent_path == "/" {
+            format!("/{old_name}")
+        } else {
+            format!("{parent_path}/{old_name}")
+        };
+
+        let new_path = if new_parent_path == "/" {
+            format!("/{new_name}")
+        } else {
+            format!("{new_parent_path}/{new_name}")
+        };
+
+        // Get the new parent ID for database operations
+        let new_parent_id = if new_parent_path == "/" {
             None
         } else {
             match self.db.get_folder_id_by_path(&new_parent_path) {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
-                    eprintln!(
-                        "62 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
-                    );
+                    eprintln!("[ERROR] rename: Database error checking for new parent folder {}: {}", new_parent_path, e);
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // Handle regular file/directory renaming
-        // Get the old path from the old parent and name
-        let old_path = if parent_path == "/" {
-            format!("/{old_name}")
-        } else {
-            format!("{parent_path}/{old_name}")
-        };
-
-        let new_path = if new_parent_path == "/" {
-            format!("/{new_name}")
-        } else {
-            format!("{new_parent_path}/{new_name}")
-        };
-
-        // Get the id for the item being renamed
-        let id = match self.db.get_note_id_by_path(&old_path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("63 [ERROR] (fn open) Could not find id for {old_path}");
-                    reply.error(ENOENT);
-                    return;
+        // First, check if it's a directory being renamed
+        match self.db.get_folder_id_by_path(&old_path) {
+            Ok(Some(folder_id)) => {
+                // It's a directory - rename the folder
+                match self.db.update_folder(&folder_id, new_name) {
+                    Ok(_success) => {
+                        self.update_inode_mappings(&old_path, &new_path);
+                        reply.ok();
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] rename: Failed to update folder: {}", e);
+                        reply.error(libc::EIO);
+                        return;
+                    }
                 }
-            },
+            }
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note
+            }
             Err(e) => {
-                eprintln!("64 [ERROR] (fn open) Could not find id for {old_path}: {e}");
+                eprintln!("[ERROR] rename: Database error checking for folder {}: {}", old_path, e);
                 reply.error(ENOENT);
                 return;
-            }
-        };
-
-        // Get the new title and extension
-        let file_name_path = Path::new(new_name);
-        let base = file_name_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned());
-        let ext = file_name_path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned());
-
-        let title = match base {
-            Some(t) => t,
-            None => {
-                eprintln!("65 [ERROR] (fn setattr) Unable to get stem from {new_name}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        let syntax = match ext {
-            Some(s) => s,
-            None => {
-                eprintln!("66 [ERROR] (fn setattr) Unable to get stem from {new_name}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Get the current note content
-
-        let note = match self.db.get_note_by_id(&id) {
-            Ok(maybe_note) => match maybe_note {
-                Some(note) => note,
-                None => {
-                    eprintln!(
-                        "67 [ERROR] (fn write) Unable to find note in database with id={id} {new_path}"
-                    );
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "68 [ERROR] (fn write) Unable to find search for in database with id={id} {old_path}"
-                );
-                eprintln!("{e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Update the note with new title and extension
-        let _succeeded = match self.db.update_note(
-            &id,
-            &title,
-            note.abstract_text.as_deref(),
-            &note.content,
-            &syntax,
-        ) {
-            Ok(is_success) => is_success,
-            Err(e) => {
-                eprintln!(
-                    "70 [ERROR] (fn rename) Unable to update note with new title and extension id={id} oldpath={old_path} newpath={new_path}"
-                );
-                eprintln!("{e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-        let _succeeded = match self.db.update_note_parent(&id, new_parent_id.as_deref()) {
-            Ok(is_success) => is_success,
-            Err(e) => {
-                eprintln!(
-                    "72 [ERROR] (fn rename) Unable to update note parent id={id} oldpath={old_path} newpath={new_path}"
-                );
-                eprintln!("{e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Successfully renamed the note
-        // Update inode mappings for the renamed item and all its descendants
-        let old_path = if parent_path == "/" {
-            format!("/{old_name}")
-        } else {
-            format!("{parent_path}/{old_name}")
-        };
-
-        let new_path = if new_parent_path == "/" {
-            format!("/{new_name}")
-        } else {
-            format!("{new_parent_path}/{new_name}")
-        };
-
-        // TODO should we consider getting this straight from the database?
-        // Collect paths to update (including descendants)
-        let mut paths_to_update = Vec::new();
-        for (path, inode) in &self.inode_map {
-            if path == &old_path || path.starts_with(&format!("{old_path}/")) {
-                let new_descendant_path = if path == &old_path {
-                    new_path.clone()
-                } else {
-                    path.replacen(&old_path, &new_path, 1)
-                };
-                paths_to_update.push((path.clone(), new_descendant_path, *inode));
             }
         }
 
-        // Apply the inode mapping updates
-        for (old_path, new_path, inode) in paths_to_update {
-            self.inode_map.remove(&old_path);
-            self.inode_map.insert(new_path.clone(), inode);
-            self.reverse_inode_map.insert(inode, new_path);
-        }
+        // Second, check if it's a note/file being renamed
+        match self.db.get_note_id_by_path(&old_path) {
+            Ok(Some(note_id)) => {
+                // It's a note/file - get the note and update it
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => {
+                        // Extract title and extension from new filename
+                        let file_name_path = Path::new(new_name);
+                        let title = file_name_path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| {
+                                eprintln!("[ERROR] rename: Unable to extract title from {}", new_name);
+                                new_name.to_string()
+                            });
+                        let syntax = file_name_path
+                            .extension()
+                            .map(|e| e.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| {
+                                eprintln!("[ERROR] rename: Unable to extract extension from {}", new_name);
+                                "txt".to_string()
+                            });
 
-        reply.ok();
+                        // Update note with new title and syntax
+                        match self.db.update_note(
+                            &note_id,
+                            &title,
+                            note.abstract_text.as_deref(),
+                            &note.content,
+                            &syntax,
+                        ) {
+                            Ok(_success) => {
+                                // Update note parent if moving to different directory
+                                match self.db.update_note_parent(&note_id, new_parent_id.as_deref()) {
+                                    Ok(_success) => {
+                                        self.update_inode_mappings(&old_path, &new_path);
+                                        reply.ok();
+                                        return;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[ERROR] rename: Failed to update note parent: {}", e);
+                                        reply.error(libc::EIO);
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[ERROR] rename: Failed to update note: {}", e);
+                                reply.error(libc::EIO);
+                                return;
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] rename: Note with id {} not found in database", note_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] rename: Database error retrieving note {}: {}", note_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] rename: Path {} not found in database", old_path);
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ERROR] rename: Database error checking for note {}: {}", old_path, e);
+                reply.error(ENOENT);
+                return;
+            }
+        }
     }
+
 
     /// Handle file deletion operations (unified schema)
     ///
@@ -1922,6 +1895,30 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
                 return;
             }
+        }
+    }
+}
+
+impl ExampleFuseFs {
+    fn update_inode_mappings(&mut self, old_path: &str, new_path: &str) {
+        // Collect paths to update (including descendants)
+        let mut paths_to_update = Vec::new();
+        for (path, inode) in &self.inode_map {
+            if path == old_path || path.starts_with(&format!("{old_path}/")) {
+                let new_descendant_path = if path == old_path {
+                    new_path.to_string()
+                } else {
+                    path.replacen(old_path, new_path, 1)
+                };
+                paths_to_update.push((path.clone(), new_descendant_path, *inode));
+            }
+        }
+
+        // Apply the inode mapping updates
+        for (old_path, new_path, inode) in paths_to_update {
+            self.inode_map.remove(&old_path);
+            self.inode_map.insert(new_path.clone(), inode);
+            self.reverse_inode_map.insert(inode, new_path);
         }
     }
 }
