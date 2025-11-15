@@ -1,3 +1,25 @@
+# SQLite FUSE
+
+## Overview
+
+This creates a FUSE file system for notes that is connected to a sqlite database
+
+## Usage
+
+1. git clone
+2. `just run`
+
+## Notes
+
+
+
+
+
+
+
+
+
+
 This is a work in progress
 
 - TODO folders table needs user_id
