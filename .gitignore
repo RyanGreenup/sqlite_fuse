@@ -1,1 +1,4 @@
 target
+testing.sqlite
+testing.sqlite-shm
+testing.sqlite-wal
