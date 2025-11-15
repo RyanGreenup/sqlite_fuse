@@ -99,14 +99,18 @@ impl Database {
 
     pub fn list_folders_by_parent(&self, parent_id: Option<&str>) -> Result<Vec<Folder>> {
         let query = match parent_id {
-            Some(_) => "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id = ?1 ORDER BY title",
-            None => "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id IS NULL ORDER BY title"
+            Some(_) => {
+                "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id = ?1 ORDER BY title"
+            }
+            None => {
+                "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id IS NULL ORDER BY title"
+            }
         };
 
         let mut stmt = self.connection.prepare(query)?;
         let folder_iter = match parent_id {
             Some(pid) => stmt.query_map([pid], Self::map_folder_row)?,
-            None => stmt.query_map([], Self::map_folder_row)?
+            None => stmt.query_map([], Self::map_folder_row)?,
         };
 
         folder_iter.collect()
@@ -194,7 +198,11 @@ impl Database {
         Ok(rows_affected > 0)
     }
 
-    pub fn list_notes_by_parent(&self, parent_id: Option<&str>, user_id: &str) -> Result<Vec<Note>> {
+    pub fn list_notes_by_parent(
+        &self,
+        parent_id: Option<&str>,
+        user_id: &str,
+    ) -> Result<Vec<Note>> {
         let query = match parent_id {
             Some(_) => "SELECT id, title, abstract, content, syntax, parent_id, user_id, created_at, updated_at
                        FROM notes WHERE parent_id = ?1 AND user_id = ?2 ORDER BY title",
@@ -205,10 +213,62 @@ impl Database {
         let mut stmt = self.connection.prepare(query)?;
         let note_iter = match parent_id {
             Some(pid) => stmt.query_map(params![pid, user_id], Self::map_note_row)?,
-            None => stmt.query_map([user_id], Self::map_note_row)?
+            None => stmt.query_map([user_id], Self::map_note_row)?,
         };
 
         note_iter.collect()
+    }
+
+    pub fn get_folder_path_by_id(&self, id: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1")?;
+
+        let mut path_iter = stmt.query_map([id], |row| Ok(row.get::<_, String>(0)?))?;
+
+        match path_iter.next() {
+            Some(path) => Ok(Some(path?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_folder_id_by_path(&self, path: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1")?;
+
+        let mut id_iter = stmt.query_map([path], |row| Ok(row.get::<_, String>(0)?))?;
+
+        match id_iter.next() {
+            Some(id) => Ok(Some(id?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_note_path_by_id(&self, id: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT full_path FROM v_note_id_path_mapping WHERE id = ?1")?;
+
+        let mut path_iter = stmt.query_map([id], |row| Ok(row.get::<_, String>(0)?))?;
+
+        match path_iter.next() {
+            Some(path) => Ok(Some(path?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_note_id_by_path(&self, path: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT id FROM v_note_id_path_mapping WHERE full_path = ?1")?;
+
+        let mut id_iter = stmt.query_map([path], |row| Ok(row.get::<_, String>(0)?))?;
+
+        match id_iter.next() {
+            Some(id) => Ok(Some(id?)),
+            None => Ok(None),
+        }
     }
 
     /// Maps a database row to a Folder struct, handling datetime parsing.
@@ -218,12 +278,30 @@ impl Database {
             id: row.get(0)?,
             title: row.get(1)?,
             parent_id: row.get(2)?,
-            created_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(3)?, "%Y-%m-%d %H:%M:%S")
-                .map_err(|_| rusqlite::Error::InvalidColumnType(3, "created_at".to_string(), rusqlite::types::Type::Text))?
-                .and_utc(),
-            updated_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(4)?, "%Y-%m-%d %H:%M:%S")
-                .map_err(|_| rusqlite::Error::InvalidColumnType(4, "updated_at".to_string(), rusqlite::types::Type::Text))?
-                .and_utc(),
+            created_at: NaiveDateTime::parse_from_str(
+                &row.get::<_, String>(3)?,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    3,
+                    "created_at".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })?
+            .and_utc(),
+            updated_at: NaiveDateTime::parse_from_str(
+                &row.get::<_, String>(4)?,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    4,
+                    "updated_at".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })?
+            .and_utc(),
         })
     }
 
@@ -238,12 +316,30 @@ impl Database {
             syntax: row.get(4)?,
             parent_id: row.get(5)?,
             user_id: row.get(6)?,
-            created_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(7)?, "%Y-%m-%d %H:%M:%S")
-                .map_err(|_| rusqlite::Error::InvalidColumnType(7, "created_at".to_string(), rusqlite::types::Type::Text))?
-                .and_utc(),
-            updated_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(8)?, "%Y-%m-%d %H:%M:%S")
-                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "updated_at".to_string(), rusqlite::types::Type::Text))?
-                .and_utc(),
+            created_at: NaiveDateTime::parse_from_str(
+                &row.get::<_, String>(7)?,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    7,
+                    "created_at".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })?
+            .and_utc(),
+            updated_at: NaiveDateTime::parse_from_str(
+                &row.get::<_, String>(8)?,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    8,
+                    "updated_at".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })?
+            .and_utc(),
         })
     }
 }
@@ -384,7 +480,8 @@ mod tests {
         let note_id = "test_note_456";
 
         // Test getting non-existent note
-        let non_existent = db.get_note_by_id("non_existent_id")
+        let non_existent = db
+            .get_note_by_id("non_existent_id")
             .expect("Failed to query non-existent note");
         assert!(non_existent.is_none());
 
@@ -396,7 +493,8 @@ mod tests {
         ).expect("Failed to insert test note");
 
         // Test getting existing note
-        let note = db.get_note_by_id(note_id)
+        let note = db
+            .get_note_by_id(note_id)
             .expect("Failed to query note")
             .expect("Note not found");
 
@@ -415,19 +513,22 @@ mod tests {
         let user_id = "test_user_456";
 
         // Create note without parent
-        let note_id = db.create_note(
-            "note_1",
-            "My First Note",
-            Some("An abstract"),
-            "# Hello World",
-            "md",
-            None,
-            user_id
-        ).expect("Failed to create note");
+        let note_id = db
+            .create_note(
+                "note_1",
+                "My First Note",
+                Some("An abstract"),
+                "# Hello World",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create note");
         assert_eq!(note_id, "note_1");
 
         // Verify note was created
-        let note = db.get_note_by_id("note_1")
+        let note = db
+            .get_note_by_id("note_1")
             .expect("Failed to query created note")
             .expect("Created note not found");
 
@@ -438,20 +539,24 @@ mod tests {
         assert_eq!(note.user_id, user_id);
 
         // Create note with parent folder
-        let folder_id = db.create_folder("Notes Folder", None)
+        let folder_id = db
+            .create_folder("Notes Folder", None)
             .expect("Failed to create folder");
 
-        let note_id2 = db.create_note(
-            "note_2",
-            "Second Note",
-            None,
-            "Some content",
-            "txt",
-            Some(&folder_id),
-            user_id
-        ).expect("Failed to create note with parent");
+        let note_id2 = db
+            .create_note(
+                "note_2",
+                "Second Note",
+                None,
+                "Some content",
+                "txt",
+                Some(&folder_id),
+                user_id,
+            )
+            .expect("Failed to create note with parent");
 
-        let note2 = db.get_note_by_id(&note_id2)
+        let note2 = db
+            .get_note_by_id(&note_id2)
             .expect("Failed to query second note")
             .expect("Second note not found");
 
@@ -465,27 +570,32 @@ mod tests {
         let db = setup_test_database();
         let user_id = "test_user_789";
 
-        let note_id = db.create_note(
-            "update_test",
-            "Original Title",
-            Some("Original abstract"),
-            "Original content",
-            "md",
-            None,
-            user_id
-        ).expect("Failed to create note for update test");
+        let note_id = db
+            .create_note(
+                "update_test",
+                "Original Title",
+                Some("Original abstract"),
+                "Original content",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create note for update test");
 
         // Test updating all content fields
-        let updated = db.update_note(
-            &note_id,
-            "Updated Title",
-            Some("Updated abstract"),
-            "Updated content",
-            "rst"
-        ).expect("Failed to update note");
+        let updated = db
+            .update_note(
+                &note_id,
+                "Updated Title",
+                Some("Updated abstract"),
+                "Updated content",
+                "rst",
+            )
+            .expect("Failed to update note");
         assert!(updated);
 
-        let note = db.get_note_by_id(&note_id)
+        let note = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query updated note")
             .expect("Updated note not found");
 
@@ -495,29 +605,22 @@ mod tests {
         assert_eq!(note.syntax, "rst");
 
         // Test updating with None abstract
-        let updated2 = db.update_note(
-            &note_id,
-            "Final Title",
-            None,
-            "Final content",
-            "md"
-        ).expect("Failed to update note with None abstract");
+        let updated2 = db
+            .update_note(&note_id, "Final Title", None, "Final content", "md")
+            .expect("Failed to update note with None abstract");
         assert!(updated2);
 
-        let note2 = db.get_note_by_id(&note_id)
+        let note2 = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query updated note")
             .expect("Updated note not found");
 
         assert_eq!(note2.abstract_text, None);
 
         // Test updating non-existent note
-        let not_updated = db.update_note(
-            "non_existent",
-            "Title",
-            None,
-            "Content",
-            "md"
-        ).expect("Failed to update non-existent note");
+        let not_updated = db
+            .update_note("non_existent", "Title", None, "Content", "md")
+            .expect("Failed to update non-existent note");
         assert!(!not_updated);
     }
 
@@ -526,54 +629,65 @@ mod tests {
         let db = setup_test_database();
         let user_id = "test_user_parent";
 
-        let note_id = db.create_note(
-            "parent_test",
-            "Test Note",
-            None,
-            "Content",
-            "md",
-            None,
-            user_id
-        ).expect("Failed to create note for parent test");
+        let note_id = db
+            .create_note(
+                "parent_test",
+                "Test Note",
+                None,
+                "Content",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create note for parent test");
 
         // Create folders
-        let folder1_id = db.create_folder("Folder 1", None)
+        let folder1_id = db
+            .create_folder("Folder 1", None)
             .expect("Failed to create folder 1");
-        let folder2_id = db.create_folder("Folder 2", None)
+        let folder2_id = db
+            .create_folder("Folder 2", None)
             .expect("Failed to create folder 2");
 
         // Move note to folder 1
-        let updated = db.update_note_parent(&note_id, Some(&folder1_id))
+        let updated = db
+            .update_note_parent(&note_id, Some(&folder1_id))
             .expect("Failed to update note parent");
         assert!(updated);
 
-        let note = db.get_note_by_id(&note_id)
+        let note = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query note")
             .expect("Note not found");
         assert_eq!(note.parent_id, Some(folder1_id.clone()));
 
         // Move note to folder 2
-        let updated2 = db.update_note_parent(&note_id, Some(&folder2_id))
+        let updated2 = db
+            .update_note_parent(&note_id, Some(&folder2_id))
             .expect("Failed to update note parent to folder 2");
         assert!(updated2);
 
-        let note2 = db.get_note_by_id(&note_id)
+        let note2 = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query note")
             .expect("Note not found");
         assert_eq!(note2.parent_id, Some(folder2_id));
 
         // Move note to root (no parent)
-        let updated3 = db.update_note_parent(&note_id, None)
+        let updated3 = db
+            .update_note_parent(&note_id, None)
             .expect("Failed to update note parent to None");
         assert!(updated3);
 
-        let note3 = db.get_note_by_id(&note_id)
+        let note3 = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query note")
             .expect("Note not found");
         assert_eq!(note3.parent_id, None);
 
         // Test updating non-existent note
-        let not_updated = db.update_note_parent("non_existent", Some(&folder1_id))
+        let not_updated = db
+            .update_note_parent("non_existent", Some(&folder1_id))
             .expect("Failed to update non-existent note parent");
         assert!(!not_updated);
     }
@@ -583,42 +697,48 @@ mod tests {
         let db = setup_test_database();
         let user_id = "test_user_delete";
 
-        let note_id = db.create_note(
-            "delete_test",
-            "Delete Me",
-            Some("Abstract"),
-            "Content to delete",
-            "md",
-            None,
-            user_id
-        ).expect("Failed to create note for delete test");
+        let note_id = db
+            .create_note(
+                "delete_test",
+                "Delete Me",
+                Some("Abstract"),
+                "Content to delete",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create note for delete test");
 
         // Verify note exists
-        let note = db.get_note_by_id(&note_id)
+        let note = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query note before delete")
             .expect("Note should exist before delete");
         assert_eq!(note.title, "Delete Me");
 
         // Delete note
-        let deleted = db.delete_note(&note_id)
-            .expect("Failed to delete note");
+        let deleted = db.delete_note(&note_id).expect("Failed to delete note");
         assert!(deleted);
 
         // Verify note is gone
-        let deleted_note = db.get_note_by_id(&note_id)
+        let deleted_note = db
+            .get_note_by_id(&note_id)
             .expect("Failed to query deleted note");
         assert!(deleted_note.is_none());
 
         // Verify history was created (check if history table has the note)
-        let mut stmt = db.connection.prepare(
-            "SELECT COUNT(*) FROM notes_history WHERE id = ?1 AND log_action = 'DELETE'"
-        ).expect("Failed to prepare history query");
-        let count: i64 = stmt.query_row([&note_id], |row| row.get(0))
+        let mut stmt = db
+            .connection
+            .prepare("SELECT COUNT(*) FROM notes_history WHERE id = ?1 AND log_action = 'DELETE'")
+            .expect("Failed to prepare history query");
+        let count: i64 = stmt
+            .query_row([&note_id], |row| row.get(0))
             .expect("Failed to query history count");
         assert_eq!(count, 1, "Note should be in history after deletion");
 
         // Test deleting non-existent note
-        let not_deleted = db.delete_note("non_existent")
+        let not_deleted = db
+            .delete_note("non_existent")
             .expect("Failed to delete non-existent note");
         assert!(!not_deleted);
     }
@@ -629,25 +749,59 @@ mod tests {
         let user_id = "test_user_list";
 
         // Create folder
-        let folder_id = db.create_folder("Test Folder", None)
+        let folder_id = db
+            .create_folder("Test Folder", None)
             .expect("Failed to create folder");
 
         // Create notes in folder
-        db.create_note("note1", "Note 1", None, "Content 1", "md", Some(&folder_id), user_id)
-            .expect("Failed to create note 1");
-        db.create_note("note2", "Note 2", None, "Content 2", "txt", Some(&folder_id), user_id)
-            .expect("Failed to create note 2");
+        db.create_note(
+            "note1",
+            "Note 1",
+            None,
+            "Content 1",
+            "md",
+            Some(&folder_id),
+            user_id,
+        )
+        .expect("Failed to create note 1");
+        db.create_note(
+            "note2",
+            "Note 2",
+            None,
+            "Content 2",
+            "txt",
+            Some(&folder_id),
+            user_id,
+        )
+        .expect("Failed to create note 2");
 
         // Create note at root level
-        db.create_note("note3", "Root Note", None, "Root content", "md", None, user_id)
-            .expect("Failed to create root note");
+        db.create_note(
+            "note3",
+            "Root Note",
+            None,
+            "Root content",
+            "md",
+            None,
+            user_id,
+        )
+        .expect("Failed to create root note");
 
         // Create note for different user in same folder
-        db.create_note("note4", "Other User", None, "Content", "md", Some(&folder_id), "other_user")
-            .expect("Failed to create note for other user");
+        db.create_note(
+            "note4",
+            "Other User",
+            None,
+            "Content",
+            "md",
+            Some(&folder_id),
+            "other_user",
+        )
+        .expect("Failed to create note for other user");
 
         // Test listing notes in folder for specific user
-        let folder_notes = db.list_notes_by_parent(Some(&folder_id), user_id)
+        let folder_notes = db
+            .list_notes_by_parent(Some(&folder_id), user_id)
             .expect("Failed to list notes in folder");
         assert_eq!(folder_notes.len(), 2);
 
@@ -657,15 +811,18 @@ mod tests {
         assert!(!titles.contains(&"Other User"));
 
         // Test listing root notes for user
-        let root_notes = db.list_notes_by_parent(None, user_id)
+        let root_notes = db
+            .list_notes_by_parent(None, user_id)
             .expect("Failed to list root notes");
         assert_eq!(root_notes.len(), 1);
         assert_eq!(root_notes[0].title, "Root Note");
 
         // Test listing notes for user with no notes in folder
-        let empty_folder_id = db.create_folder("Empty Folder", None)
+        let empty_folder_id = db
+            .create_folder("Empty Folder", None)
             .expect("Failed to create empty folder");
-        let empty_notes = db.list_notes_by_parent(Some(&empty_folder_id), user_id)
+        let empty_notes = db
+            .list_notes_by_parent(Some(&empty_folder_id), user_id)
             .expect("Failed to list notes in empty folder");
         assert_eq!(empty_notes.len(), 0);
     }
@@ -676,43 +833,320 @@ mod tests {
         let user_id = "fts_test_user";
 
         // Create a note
-        let note_id = db.create_note(
-            "fts_test",
-            "Searchable Note",
-            Some("This is searchable"),
-            "Content with keywords",
-            "md",
-            None,
-            user_id
-        ).expect("Failed to create note for FTS test");
+        let note_id = db
+            .create_note(
+                "fts_test",
+                "Searchable Note",
+                Some("This is searchable"),
+                "Content with keywords",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create note for FTS test");
 
         // Verify note was added to FTS table
-        let mut stmt = db.connection.prepare(
-            "SELECT COUNT(*) FROM notes_fts WHERE id = ?1"
-        ).expect("Failed to prepare FTS query");
-        let count: i64 = stmt.query_row([&note_id], |row| row.get(0))
+        let mut stmt = db
+            .connection
+            .prepare("SELECT COUNT(*) FROM notes_fts WHERE id = ?1")
+            .expect("Failed to prepare FTS query");
+        let count: i64 = stmt
+            .query_row([&note_id], |row| row.get(0))
             .expect("Failed to query FTS count");
         assert_eq!(count, 1, "Note should be in FTS table after creation");
 
         // Update the note and verify FTS is updated
-        db.update_note(&note_id, "Updated Searchable", Some("Updated abstract"), "Updated content", "md")
-            .expect("Failed to update note");
+        db.update_note(
+            &note_id,
+            "Updated Searchable",
+            Some("Updated abstract"),
+            "Updated content",
+            "md",
+        )
+        .expect("Failed to update note");
 
-        let mut stmt = db.connection.prepare(
-            "SELECT title FROM notes_fts WHERE id = ?1"
-        ).expect("Failed to prepare FTS query");
-        let title: String = stmt.query_row([&note_id], |row| row.get(0))
+        let mut stmt = db
+            .connection
+            .prepare("SELECT title FROM notes_fts WHERE id = ?1")
+            .expect("Failed to prepare FTS query");
+        let title: String = stmt
+            .query_row([&note_id], |row| row.get(0))
             .expect("Failed to query FTS title");
-        assert_eq!(title, "Updated Searchable", "FTS should reflect updated title");
+        assert_eq!(
+            title, "Updated Searchable",
+            "FTS should reflect updated title"
+        );
 
         // Delete the note and verify it's removed from FTS
         db.delete_note(&note_id).expect("Failed to delete note");
 
-        let mut stmt = db.connection.prepare(
-            "SELECT COUNT(*) FROM notes_fts WHERE id = ?1"
-        ).expect("Failed to prepare FTS query");
-        let count: i64 = stmt.query_row([&note_id], |row| row.get(0))
+        let mut stmt = db
+            .connection
+            .prepare("SELECT COUNT(*) FROM notes_fts WHERE id = ?1")
+            .expect("Failed to prepare FTS query");
+        let count: i64 = stmt
+            .query_row([&note_id], |row| row.get(0))
             .expect("Failed to query FTS count");
-        assert_eq!(count, 0, "Note should be removed from FTS table after deletion");
+        assert_eq!(
+            count, 0,
+            "Note should be removed from FTS table after deletion"
+        );
+    }
+
+    #[test]
+    fn test_folder_path_resolution() {
+        let db = setup_test_database();
+
+        // Create nested folder structure: Documents/Projects/MyProject
+        let docs_id = db
+            .create_folder("Documents", None)
+            .expect("Failed to create Documents folder");
+        let projects_id = db
+            .create_folder("Projects", Some(&docs_id))
+            .expect("Failed to create Projects folder");
+        let myproject_id = db
+            .create_folder("MyProject", Some(&projects_id))
+            .expect("Failed to create MyProject folder");
+
+        // Test getting paths by ID
+        let docs_path = db
+            .get_folder_path_by_id(&docs_id)
+            .expect("Failed to get Documents path")
+            .expect("Documents path should exist");
+        assert_eq!(docs_path, "Documents");
+
+        let projects_path = db
+            .get_folder_path_by_id(&projects_id)
+            .expect("Failed to get Projects path")
+            .expect("Projects path should exist");
+        assert_eq!(projects_path, "Documents/Projects");
+
+        let myproject_path = db
+            .get_folder_path_by_id(&myproject_id)
+            .expect("Failed to get MyProject path")
+            .expect("MyProject path should exist");
+        assert_eq!(myproject_path, "Documents/Projects/MyProject");
+
+        // Test getting IDs by path
+        let docs_id_resolved = db
+            .get_folder_id_by_path("Documents")
+            .expect("Failed to resolve Documents ID")
+            .expect("Documents ID should exist");
+        assert_eq!(docs_id_resolved, docs_id);
+
+        let projects_id_resolved = db
+            .get_folder_id_by_path("Documents/Projects")
+            .expect("Failed to resolve Projects ID")
+            .expect("Projects ID should exist");
+        assert_eq!(projects_id_resolved, projects_id);
+
+        let myproject_id_resolved = db
+            .get_folder_id_by_path("Documents/Projects/MyProject")
+            .expect("Failed to resolve MyProject ID")
+            .expect("MyProject ID should exist");
+        assert_eq!(myproject_id_resolved, myproject_id);
+
+        // Test non-existent paths/IDs
+        let non_existent_path = db
+            .get_folder_path_by_id("non_existent_id")
+            .expect("Failed to query non-existent folder path");
+        assert!(non_existent_path.is_none());
+
+        let non_existent_id = db
+            .get_folder_id_by_path("Non/Existent/Path")
+            .expect("Failed to query non-existent folder ID");
+        assert!(non_existent_id.is_none());
+    }
+
+    #[test]
+    fn test_note_path_resolution() {
+        let db = setup_test_database();
+        let user_id = "path_test_user";
+
+        // Create folder structure and notes
+        let work_id = db
+            .create_folder("Work", None)
+            .expect("Failed to create Work folder");
+        let projects_id = db
+            .create_folder("Projects", Some(&work_id))
+            .expect("Failed to create Projects folder");
+
+        // Create notes at different levels
+        let root_note_id = db
+            .create_note(
+                "root_note",
+                "README",
+                None,
+                "Root readme content",
+                "md",
+                None,
+                user_id,
+            )
+            .expect("Failed to create root note");
+
+        let work_note_id = db
+            .create_note(
+                "work_note",
+                "agenda",
+                None,
+                "Work agenda",
+                "org",
+                Some(&work_id),
+                user_id,
+            )
+            .expect("Failed to create work note");
+
+        let project_note_id = db
+            .create_note(
+                "project_note",
+                "specification",
+                None,
+                "Project spec",
+                "txt",
+                Some(&projects_id),
+                user_id,
+            )
+            .expect("Failed to create project note");
+
+        // Test getting paths by ID
+        let root_path = db
+            .get_note_path_by_id(&root_note_id)
+            .expect("Failed to get root note path")
+            .expect("Root note path should exist");
+        assert_eq!(root_path, "README.md");
+
+        let work_path = db
+            .get_note_path_by_id(&work_note_id)
+            .expect("Failed to get work note path")
+            .expect("Work note path should exist");
+        assert_eq!(work_path, "Work/agenda.org");
+
+        let project_path = db
+            .get_note_path_by_id(&project_note_id)
+            .expect("Failed to get project note path")
+            .expect("Project note path should exist");
+        assert_eq!(project_path, "Work/Projects/specification.txt");
+
+        // Test getting IDs by path
+        let root_id_resolved = db
+            .get_note_id_by_path("README.md")
+            .expect("Failed to resolve root note ID")
+            .expect("Root note ID should exist");
+        assert_eq!(root_id_resolved, root_note_id);
+
+        let work_id_resolved = db
+            .get_note_id_by_path("Work/agenda.org")
+            .expect("Failed to resolve work note ID")
+            .expect("Work note ID should exist");
+        assert_eq!(work_id_resolved, work_note_id);
+
+        let project_id_resolved = db
+            .get_note_id_by_path("Work/Projects/specification.txt")
+            .expect("Failed to resolve project note ID")
+            .expect("Project note ID should exist");
+        assert_eq!(project_id_resolved, project_note_id);
+
+        // Test non-existent paths/IDs
+        let non_existent_path = db
+            .get_note_path_by_id("non_existent_note")
+            .expect("Failed to query non-existent note path");
+        assert!(non_existent_path.is_none());
+
+        let non_existent_id = db
+            .get_note_id_by_path("Non/Existent/note.md")
+            .expect("Failed to query non-existent note ID");
+        assert!(non_existent_id.is_none());
+    }
+
+    #[test]
+    fn test_path_resolution_edge_cases() {
+        let db = setup_test_database();
+        let user_id = "edge_case_user";
+
+        // Test folder with special characters in name
+        let special_id = db
+            .create_folder("Folder-With_Special.Chars", None)
+            .expect("Failed to create folder with special chars");
+
+        let special_path = db
+            .get_folder_path_by_id(&special_id)
+            .expect("Failed to get special folder path")
+            .expect("Special folder path should exist");
+        assert_eq!(special_path, "Folder-With_Special.Chars");
+
+        let special_id_resolved = db
+            .get_folder_id_by_path("Folder-With_Special.Chars")
+            .expect("Failed to resolve special folder ID")
+            .expect("Special folder ID should exist");
+        assert_eq!(special_id_resolved, special_id);
+
+        // Test note with different syntax extensions
+        let py_note_id = db
+            .create_note(
+                "python_script",
+                "script",
+                None,
+                "print('hello')",
+                "py",
+                None,
+                user_id,
+            )
+            .expect("Failed to create Python note");
+
+        let py_path = db
+            .get_note_path_by_id(&py_note_id)
+            .expect("Failed to get Python note path")
+            .expect("Python note path should exist");
+        assert_eq!(py_path, "script.py");
+
+        let py_id_resolved = db
+            .get_note_id_by_path("script.py")
+            .expect("Failed to resolve Python note ID")
+            .expect("Python note ID should exist");
+        assert_eq!(py_id_resolved, py_note_id);
+
+        // Test deeply nested structure (5 levels)
+        let mut current_parent = None;
+        let mut expected_path = String::new();
+
+        for i in 1..=5 {
+            let folder_name = format!("Level{}", i);
+            let folder_id = db
+                .create_folder(&folder_name, current_parent.as_deref())
+                .expect("Failed to create nested folder");
+
+            if expected_path.is_empty() {
+                expected_path = folder_name.clone();
+            } else {
+                expected_path = format!("{}/{}", expected_path, folder_name);
+            }
+
+            let resolved_path = db
+                .get_folder_path_by_id(&folder_id)
+                .expect("Failed to get nested folder path")
+                .expect("Nested folder path should exist");
+            assert_eq!(resolved_path, expected_path);
+
+            current_parent = Some(folder_id);
+        }
+
+        // Create note in deeply nested folder
+        let deep_note_id = db
+            .create_note(
+                "deep_note",
+                "deep",
+                None,
+                "Deep content",
+                "md",
+                current_parent.as_deref(),
+                user_id,
+            )
+            .expect("Failed to create deep note");
+
+        let deep_path = db
+            .get_note_path_by_id(&deep_note_id)
+            .expect("Failed to get deep note path")
+            .expect("Deep note path should exist");
+        assert_eq!(deep_path, "Level1/Level2/Level3/Level4/Level5/deep.md");
     }
 }
