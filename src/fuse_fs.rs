@@ -744,7 +744,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                eprintln!("[ERROR] (fn create) Unable to get stem from {file_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -752,8 +752,8 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
-                reply.error(ENOENT);
+                eprintln!("[ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)");
+                reply.error(libc::EINVAL);
                 return;
             }
         };
@@ -1703,7 +1703,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                eprintln!("[ERROR] (fn mknod) Unable to get stem from {file_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1711,8 +1711,8 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
-                reply.error(ENOENT);
+                eprintln!("[ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)");
+                reply.error(libc::EINVAL);
                 return;
             }
         };

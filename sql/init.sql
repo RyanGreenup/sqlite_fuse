@@ -150,7 +150,7 @@ WITH RECURSIVE folder_path AS (
         id,
         title,
         parent_id,
-        title AS path
+        '/' || title AS path
     FROM folders
     WHERE parent_id IS NULL
 
@@ -179,7 +179,7 @@ WITH RECURSIVE folder_path AS (
         id,
         title,
         parent_id,
-        title AS path
+        '/' || title AS path
     FROM folders
     WHERE parent_id IS NULL
 
@@ -199,7 +199,7 @@ SELECT
     n.title,
     n.syntax,
     CASE
-        WHEN n.parent_id IS NULL THEN n.title || '.' || n.syntax
+        WHEN n.parent_id IS NULL THEN '/' || n.title || '.' || n.syntax
         ELSE fp.path || '/' || n.title || '.' || n.syntax
     END AS full_path
 FROM notes n
