@@ -613,32 +613,52 @@ impl Filesystem for ExampleFuseFs {
                 }
             }
         } else {
-            // Non-root directory - get contents recursively
-            match self.db.get_folder_contents_recursive(&folder_id.unwrap(), todo_user_id) {
-                Ok(contents) => {
-                    for item in contents {
-                        let (is_dir, full_path) = match item {
-                            crate::database::FileType::File { path } => (false, path),
-                            crate::database::FileType::Directory { path } => (true, path),
-                        };
-
-                        // Extract just the filename/dirname from the full path
-                        let basename = full_path.split('/').last().unwrap_or(&full_path).to_string();
-                        
-                        if !seen_names.contains(&basename) {
-                            seen_names.insert(basename.clone());
-                            let child_ino = self.get_or_create_inode(&full_path);
-                            let file_type = if is_dir {
-                                FileType::Directory
+            // Non-root directory - get direct children only
+            let current_folder_id = folder_id.unwrap();
+            
+            // Get direct child folders
+            match self.db.list_folders_by_parent(Some(&current_folder_id)) {
+                Ok(folders) => {
+                    for folder in folders {
+                        let name = folder.title.clone();
+                        if !seen_names.contains(&name) {
+                            seen_names.insert(name.clone());
+                            let folder_path = if path == "/" {
+                                format!("/{}", name)
                             } else {
-                                FileType::RegularFile
+                                format!("{}/{}", path, name)
                             };
-                            entries.push((child_ino, file_type, basename));
+                            let child_ino = self.get_or_create_inode(&folder_path);
+                            entries.push((child_ino, FileType::Directory, name));
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[ERROR] readdir: Unable to get folder contents for {}: {}", path, e);
+                    eprintln!("[ERROR] readdir: Unable to get child folders for {}: {}", path, e);
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+
+            // Get direct child notes
+            match self.db.list_notes_by_parent(Some(&current_folder_id), todo_user_id) {
+                Ok(notes) => {
+                    for note in notes {
+                        let filename = format!("{}.{}", note.title, note.syntax);
+                        if !seen_names.contains(&filename) {
+                            seen_names.insert(filename.clone());
+                            let file_path = if path == "/" {
+                                format!("/{}", filename)
+                            } else {
+                                format!("{}/{}", path, filename)
+                            };
+                            let child_ino = self.get_or_create_inode(&file_path);
+                            entries.push((child_ino, FileType::RegularFile, filename));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ERROR] readdir: Unable to get child notes for {}: {}", path, e);
                     reply.error(ENOENT);
                     return;
                 }
