@@ -191,7 +191,7 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        eprintln!("[DEBUG] lookup: parent={}, name={}", parent, name_str);
+        eprintln!("[DEBUG] 1 lookup: parent={}, name={}", parent, name_str);
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -209,56 +209,116 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{name_str}")
         };
 
-        let _id = match self.db.get_note_id_by_path(&full_path) {
+        // Then it must be a note
+        match self.db.get_note_id_by_path(&full_path) {
             Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {full_path}");
-                    reply.error(ENOENT);
+                Some(id) => {
+                    // So it is a note
+                    let note = match self.db.get_note_by_id(&id) {
+                        Ok(maybe_note) => match maybe_note {
+                            Some(note) => note,
+                            None => {
+                                eprintln!(
+                                    "[ERROR] 8382920 (fn lookup) Unable to find note in database with id={id} {full_path}"
+                                );
+                                reply.error(ENOENT);
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!(
+                                "[ERROR]  328323290 (fn lookup) Unable to find search for in database with id={id} {full_path}"
+                            );
+                            reply.error(ENOENT);
+                            return;
+                        }
+                    };
+
+                    let inode = self.get_or_create_inode(&full_path);
+                    let content_size = note.content.len();
+
+                    // TODO: Parse timestamp strings properly
+                    let attr = FileAttr {
+                        ino: inode,
+                        size: content_size as u64,
+                        blocks: content_size.div_ceil(512) as u64,
+                        atime: UNIX_EPOCH,  // TODO: Parse created_at
+                        mtime: UNIX_EPOCH,  // TODO: Parse updated_at
+                        ctime: UNIX_EPOCH,  // TODO: Parse updated_at
+                        crtime: UNIX_EPOCH, // TODO: Parse created_at
+                        kind: FileType::RegularFile,
+                        perm: 0o644,
+                        nlink: 1,
+                        uid: 501,
+                        gid: 20,
+                        rdev: 0,
+                        flags: 0,
+                        blksize: 512,
+                    };
+                    reply.entry(&TTL, &attr, 0);
                     return;
+                }
+                None => {
+                    let folder_id = if full_path == "/" {
+                        eprintln!("2383209329032 [ERROR Maybe] Should How do we handle root in lookup?");
+                        reply.error(ENOENT);
+                        return;
+                    } else {
+                        match self.db.get_folder_id_by_path(&full_path) {
+                            Ok(maybe_id) => maybe_id,
+                            Err(e) => {
+                                eprintln!(
+                                    "9082390320932 [ERROR] (fn lookup) Unable to query database for id for the directory {full_path}: {e}"
+                                );
+                                reply.error(ENOENT);
+                                return;
+                            }
+                        }
+                    };
+                    match folder_id {
+                        Some(id) => {
+                            // TODO get the times etc from the database using the id
+                            let inode = self.get_or_create_inode(&full_path);
+                            let attr = FileAttr {
+                                ino: inode,
+                                size: 0,
+                                blocks: 0,
+                                atime: UNIX_EPOCH,  // TODO: Parse created_at
+                                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
+                                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
+                                crtime: UNIX_EPOCH, // TODO: Parse created_at
+                                kind: FileType::Directory,
+                                perm: 0o755,
+                                nlink: 2,
+                                uid: 501,
+                                gid: 20,
+                                rdev: 0,
+                                flags: 0,
+                                blksize: 512,
+                            };
+                            reply.entry(&TTL, &attr, 0);
+                            return;
+                        }
+                        None => {
+                            eprintln!(
+                                "lkdkldskl [ERROR] (fn lookup) Unable to find any id in database for {full_path}"
+                            );
+                            reply.error(ENOENT);
+                            return;
+                        }
+                    }
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {full_path}: {e}");
+                eprintln!("3 [ERROR] (fn open) Could not find id for {full_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
         };
-
-        // Handle editor temporary files with synthetic attributes
-        if Self::is_editor_temp_file(name_str) {
-            let inode = self.get_or_create_inode(&full_path);
-
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            let attr = FileAttr {
-                ino: inode,
-                size: 0,
-                blocks: 0,
-                atime: UNIX_EPOCH + Duration::from_secs(now),
-                mtime: UNIX_EPOCH + Duration::from_secs(now),
-                ctime: UNIX_EPOCH + Duration::from_secs(now),
-                crtime: UNIX_EPOCH + Duration::from_secs(now),
-                kind: FileType::RegularFile,
-                perm: 0o644,
-                nlink: 1,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-
-            reply.entry(&TTL, &attr, 0);
-            return;
-        }
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        eprintln!("[DEBUG] getattr: ino={}", ino);
+        eprintln!("6 [DEBUG] getattr: ino={}", ino);
         if ino == 1 {
             // Root directory
             let attr = FileAttr {
@@ -320,13 +380,13 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => match maybe_id {
                     Some(id) => id,
                     None => {
-                        eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                        eprintln!("7 [ERROR] (fn open) Could not find id for {path}");
                         reply.error(ENOENT);
                         return;
                     }
                 },
                 Err(e) => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                    eprintln!("8 [ERROR] (fn open) Could not find id for {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -337,7 +397,7 @@ impl Filesystem for ExampleFuseFs {
                     Some(note) => note,
                     None => {
                         eprintln!(
-                            "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                            "9 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
                         );
                         reply.error(ENOENT);
                         return;
@@ -345,7 +405,7 @@ impl Filesystem for ExampleFuseFs {
                 },
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                        "10 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
                     );
                     eprintln!("{e}");
 
@@ -409,13 +469,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    eprintln!("11 [ERROR] (fn open) Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("12 [ERROR] (fn open) Could not find id for {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -427,7 +487,7 @@ impl Filesystem for ExampleFuseFs {
                 Some(note) => note,
                 None => {
                     eprintln!(
-                        "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                        "13 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -435,7 +495,7 @@ impl Filesystem for ExampleFuseFs {
             },
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                    "14 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -483,13 +543,13 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => match maybe_id {
                     Some(id) => Some(id),
                     None => {
-                        eprintln!("Unable to get folder for {path}");
+                        eprintln!("15 Unable to get folder for {path}");
                         reply.error(ENOENT);
                         return;
                     }
                 },
                 Err(e) => {
-                    eprintln!("Unable to get folder for {path}: {e}");
+                    eprintln!(" 16 Unable to get folder for {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -520,12 +580,12 @@ impl Filesystem for ExampleFuseFs {
         // TODO this should be a command line argument
         // TODO the underlying database should filter this for every query
         let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
-        
+
         // Handle root directory differently
         let db_titles = if path == "/" {
             // For root, get all top-level folders and notes
             let mut files = Vec::new();
-            
+
             // Get root folders
             match self.db.list_folders_by_parent(None) {
                 Ok(folders) => {
@@ -536,12 +596,12 @@ impl Filesystem for ExampleFuseFs {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[ERROR] Unable to get root folders: {e}");
+                    eprintln!("17 [ERROR] Unable to get root folders: {e}");
                     reply.error(ENOENT);
                     return;
                 }
             }
-            
+
             // Get root notes
             match self.db.list_notes_by_parent(None, todo_user_id) {
                 Ok(notes) => {
@@ -552,19 +612,22 @@ impl Filesystem for ExampleFuseFs {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[ERROR] Unable to get root notes: {e}");
+                    eprintln!("18 [ERROR] Unable to get root notes: {e}");
                     reply.error(ENOENT);
                     return;
                 }
             }
-            
+
             files
         } else {
             // For non-root folders, use the existing recursive function
-            match self.db.get_folder_contents_recursive(&id.unwrap(), todo_user_id) {
+            match self
+                .db
+                .get_folder_contents_recursive(&id.unwrap(), todo_user_id)
+            {
                 Ok(titles) => titles,
                 Err(e) => {
-                    eprintln!("[ERROR] Unable to get titles for folder at {path}: {e}");
+                    eprintln!("19 [ERROR] Unable to get titles for folder at {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -651,7 +714,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] Unable to query database for id for the directory {parent_path}"
+                        "20 [ERROR] Unable to query database for id for the directory {parent_path}"
                     );
                     eprintln!("{e}");
                     reply.error(ENOENT);
@@ -665,7 +728,7 @@ impl Filesystem for ExampleFuseFs {
             // Get the returned id in case the API changes
             Ok(id) => id,
             Err(e) => {
-                eprintln!("[ERROR] Unable to create folder for {full_path}: {e}");
+                eprintln!("21 [ERROR] Unable to create folder for {full_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -726,7 +789,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         eprintln!(
-            "[DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}",
+            "21 [DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}",
             parent, file_name, mode, flags
         );
 
@@ -791,7 +854,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn create) Unable to get stem from {file_name}");
+                eprintln!("22 [ERROR] (fn create) Unable to get stem from {file_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -799,7 +862,9 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)");
+                eprintln!(
+                    "23 [ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)"
+                );
                 reply.error(libc::EINVAL);
                 return;
             }
@@ -814,7 +879,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] Unable to query database for id for the directory {parent_path}"
+                        "24 [ERROR] Unable to query database for id for the directory {parent_path}"
                     );
                     eprintln!("{e}");
                     reply.error(ENOENT);
@@ -840,7 +905,7 @@ impl Filesystem for ExampleFuseFs {
             // Get the returned id in case the API changes
             Ok(id) => id,
             Err(e) => {
-                eprintln!("[ERROR] Unable to create note for {full_path}: {e}");
+                eprintln!("25 [ERROR] Unable to create note for {full_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -852,13 +917,13 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => match maybe_id {
                     Some(id) => id,
                     None => {
-                        eprintln!("[ERROR] (fn open) Could not find id for {full_path}");
+                        eprintln!("26 [ERROR] (fn open) Could not find id for {full_path}");
                         reply.error(ENOENT);
                         return;
                     }
                 },
                 Err(e) => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {full_path}: {e}");
+                    eprintln!("27 [ERROR] (fn open) Could not find id for {full_path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -870,7 +935,7 @@ impl Filesystem for ExampleFuseFs {
                     Some(path) => path,
                     None => {
                         eprintln!(
-                            "[ERROR] Unable to to find path for id={id} that was just created from {full_path}"
+                            "28 [ERROR] Unable to to find path for id={id} that was just created from {full_path}"
                         );
                         reply.error(ENOENT);
                         return;
@@ -878,7 +943,7 @@ impl Filesystem for ExampleFuseFs {
                 },
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] Unable to retrieve path for id={id} that was just created from {full_path}"
+                        "29 [ERROR] Unable to retrieve path for id={id} that was just created from {full_path}"
                     );
                     eprintln!("{e}");
 
@@ -890,10 +955,10 @@ impl Filesystem for ExampleFuseFs {
             // assert equality
             if created_path != full_path {
                 eprintln!(
-                    "[ERROR] Created Path differs from Retrieved path for note just created:"
+                    "29 [ERROR] Created Path differs from Retrieved path for note just created:"
                 );
-                eprintln!("{created_path}");
-                eprintln!("{full_path}");
+                eprintln!("30 {created_path}");
+                eprintln!("38 {full_path}");
             }
         }
 
@@ -982,13 +1047,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] Could not find id for {path}");
+                    eprintln!("39 [ERROR] Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] Could not find id for {path}");
+                eprintln!("40 [ERROR] Could not find id for {path}");
                 eprintln!("{e}");
 
                 reply.error(ENOENT);
@@ -1001,7 +1066,7 @@ impl Filesystem for ExampleFuseFs {
                 Some(note) => note,
                 None => {
                     eprintln!(
-                        "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                        "42 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1009,7 +1074,7 @@ impl Filesystem for ExampleFuseFs {
             },
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                    "43 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -1059,7 +1124,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.written(data.len() as u32);
             }
             Err(e) => {
-                eprintln!("Failed to update content: {}", e);
+                eprintln!("45 Failed to update content: {}", e);
                 reply.error(libc::EIO);
             }
         }
@@ -1069,12 +1134,12 @@ impl Filesystem for ExampleFuseFs {
     ///
     /// This method verifies that a file exists before allowing it to be opened.
     fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: fuser::ReplyOpen) {
-        eprintln!("[DEBUG] open: ino={}, flags={:#x}", ino, flags);
+        eprintln!("46 [DEBUG] open: ino={}, flags={:#x}", ino, flags);
 
         // Check if O_CREAT flag is set (0x40 or 0x100)
         const O_CREAT: i32 = 0x40;
         if flags & O_CREAT != 0 {
-            eprintln!("[DEBUG] open called with O_CREAT flag - file creation through open!");
+            eprintln!("47 [DEBUG] open called with O_CREAT flag - file creation through open!");
         }
 
         // Verify that the inode exists and corresponds to a valid file
@@ -1097,7 +1162,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                        "48 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1117,13 +1182,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    eprintln!("49 [ERROR] (fn open) Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("50 [ERROR] (fn open) Could not find id for {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1137,18 +1202,13 @@ impl Filesystem for ExampleFuseFs {
         }
     }
 
-    /// Handle file attribute setting operations (unified schema)
+    /// Handle file attribute setting operations
     ///
-    /// In the unified schema, this handles both regular files and index files.
-    /// Index files (index.{ext}) provide access to parent note content when
-    /// a note has children and becomes a directory.
     ///
     /// Key behaviors:
     /// - Handles size changes (truncation/extension of file content)
-    /// - Supports both regular files ({title}.{ext}) and index files (index.{ext})
     /// - Updates timestamps in the database when modified
     /// - Validates that the file exists before making changes
-    /// - Returns updated file attributes after successful changes
     fn setattr(
         &mut self,
         _req: &Request,
@@ -1213,7 +1273,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {filename}");
+                eprintln!("52 [ERROR] (fn setattr) Unable to get stem from {filename}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1221,7 +1281,7 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {filename}");
+                eprintln!("53 [ERROR] (fn setattr) Unable to get stem from {filename}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1231,13 +1291,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    eprintln!("54 [ERROR] (fn open) Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("55 [ERROR] (fn open) Could not find id for {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1248,7 +1308,7 @@ impl Filesystem for ExampleFuseFs {
                 Some(note) => note,
                 None => {
                     eprintln!(
-                        "[ERROR] (fn setattr) Unable to find note in database with id={id} {path}"
+                        "56 [ERROR] (fn setattr) Unable to find note in database with id={id} {path}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1256,7 +1316,7 @@ impl Filesystem for ExampleFuseFs {
             },
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn setattr) Unable to find search for in database with id={id} {path}"
+                    "57 [ERROR] (fn setattr) Unable to find search for in database with id={id} {path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -1291,14 +1351,14 @@ impl Filesystem for ExampleFuseFs {
                     if is_success {
                         is_success
                     } else {
-                        eprintln!("[ERROR] (fn setattr) Unable to update {path} with id={id}");
+                        eprintln!("59 [ERROR] (fn setattr) Unable to update {path} with id={id}");
                         reply.error(ENOENT);
                         return;
                     }
                 }
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn setattr) Sql error trying to write to {path} with id={id}"
+                        "60 [ERROR] (fn setattr) Sql error trying to write to {path} with id={id}"
                     );
                     eprintln!("{e}");
                     reply.error(ENOENT);
@@ -1443,7 +1503,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                        "62 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1470,13 +1530,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {old_path}");
+                    eprintln!("63 [ERROR] (fn open) Could not find id for {old_path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {old_path}: {e}");
+                eprintln!("64 [ERROR] (fn open) Could not find id for {old_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1494,7 +1554,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {new_name}");
+                eprintln!("65 [ERROR] (fn setattr) Unable to get stem from {new_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1502,7 +1562,7 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] (fn setattr) Unable to get stem from {new_name}");
+                eprintln!("66 [ERROR] (fn setattr) Unable to get stem from {new_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1515,7 +1575,7 @@ impl Filesystem for ExampleFuseFs {
                 Some(note) => note,
                 None => {
                     eprintln!(
-                        "[ERROR] (fn write) Unable to find note in database with id={id} {new_path}"
+                        "67 [ERROR] (fn write) Unable to find note in database with id={id} {new_path}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1523,7 +1583,7 @@ impl Filesystem for ExampleFuseFs {
             },
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn write) Unable to find search for in database with id={id} {old_path}"
+                    "68 [ERROR] (fn write) Unable to find search for in database with id={id} {old_path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -1542,7 +1602,7 @@ impl Filesystem for ExampleFuseFs {
             Ok(is_success) => is_success,
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn rename) Unable to update note with new title and extension id={id} oldpath={old_path} newpath={new_path}"
+                    "70 [ERROR] (fn rename) Unable to update note with new title and extension id={id} oldpath={old_path} newpath={new_path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -1553,7 +1613,7 @@ impl Filesystem for ExampleFuseFs {
             Ok(is_success) => is_success,
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn rename) Unable to update note parent id={id} oldpath={old_path} newpath={new_path}"
+                    "72 [ERROR] (fn rename) Unable to update note parent id={id} oldpath={old_path} newpath={new_path}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);
@@ -1647,13 +1707,13 @@ impl Filesystem for ExampleFuseFs {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
-                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    eprintln!("74 [ERROR] (fn open) Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("75 [ERROR] (fn open) Could not find id for {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1723,7 +1783,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                        "76 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1750,7 +1810,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match base {
             Some(t) => t,
             None => {
-                eprintln!("[ERROR] (fn mknod) Unable to get stem from {file_name}");
+                eprintln!("77 [ERROR] (fn mknod) Unable to get stem from {file_name}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1758,7 +1818,9 @@ impl Filesystem for ExampleFuseFs {
         let syntax = match ext {
             Some(s) => s,
             None => {
-                eprintln!("[ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)");
+                eprintln!(
+                    "78 [ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)"
+                );
                 reply.error(libc::EINVAL);
                 return;
             }
@@ -1780,7 +1842,7 @@ impl Filesystem for ExampleFuseFs {
             // Get the returned id in case the API changes
             Ok(id) => id,
             Err(e) => {
-                eprintln!("[ERROR] Unable to create note for {full_path}: {e}");
+                eprintln!("79 [ERROR] Unable to create note for {full_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1844,7 +1906,7 @@ impl Filesystem for ExampleFuseFs {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
-                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                        "80 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1856,7 +1918,7 @@ impl Filesystem for ExampleFuseFs {
         let parent_id = match maybe_parent_id {
             Some(id) => id,
             None => {
-                eprintln!("[ERROR] There is no id associated with the folder {path}");
+                eprintln!("81 [ERROR] There is no id associated with the folder {path}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1870,7 +1932,7 @@ impl Filesystem for ExampleFuseFs {
         {
             Ok((fc, nc)) => nc + fc > 0,
             Err(e) => {
-                eprintln!("[ERROR] (fn rmdir) Unable to get child counts from database");
+                eprintln!("82 [ERROR] (fn rmdir) Unable to get child counts from database");
                 eprintln!("{e}");
                 reply.error(ENOENT);
                 return;
@@ -1900,7 +1962,7 @@ impl Filesystem for ExampleFuseFs {
                     reply.ok();
                 } else {
                     eprintln!(
-                        "[ERROR] (fn rmdir) Unable to delete directory {parent_path} with id {parent_id}"
+                        "84 [ERROR] (fn rmdir) Unable to delete directory {parent_path} with id {parent_id}"
                     );
                     reply.error(ENOENT);
                     return;
@@ -1908,7 +1970,7 @@ impl Filesystem for ExampleFuseFs {
             }
             Err(e) => {
                 eprintln!(
-                    "[ERROR] (fn rmdir) SQL error trying to delete directory {parent_path} with id {parent_id}"
+                    "85 [ERROR] (fn rmdir) SQL error trying to delete directory {parent_path} with id {parent_id}"
                 );
                 eprintln!("{e}");
                 reply.error(ENOENT);

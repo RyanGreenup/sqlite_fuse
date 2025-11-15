@@ -233,6 +233,19 @@ impl Database {
     }
 
     pub fn get_folder_id_by_path(&self, path: &str) -> Result<Option<String>> {
+        println!("[get_folder_id_by_path] Looking for {path}");
+        println!("[get_folder_id_by_path] Debugging v_folder_id_path_mapping:");
+        let mut debug_stmt = self
+            .connection
+            .prepare("SELECT full_path, id FROM v_folder_id_path_mapping")?;
+        let debug_iter = debug_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for result in debug_iter {
+            let (path, id) = result?;
+            println!("[get_folder_id_by_path] Path: '{}', ID: '{}'", path, id);
+        }
         let mut stmt = self
             .connection
             .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1")?;
@@ -279,7 +292,7 @@ impl Database {
         let query = "
             WITH RECURSIVE folder_tree AS (
                 -- Base case: the specified folder
-                SELECT 
+                SELECT
                     id,
                     title,
                     parent_id,
@@ -287,16 +300,16 @@ impl Database {
                     title as path
                 FROM folders
                 WHERE id = ?1
-                
+
                 UNION ALL
-                
+
                 -- Recursive case: child folders
-                SELECT 
+                SELECT
                     f.id,
                     f.title,
                     f.parent_id,
                     ft.depth + 1 as depth,
-                    CASE 
+                    CASE
                         WHEN ft.depth = 0 THEN f.title
                         ELSE ft.path || '/' || f.title
                     END as path
@@ -304,7 +317,7 @@ impl Database {
                 INNER JOIN folder_tree ft ON f.parent_id = ft.id
             ),
             folder_paths AS (
-                SELECT 
+                SELECT
                     id,
                     path,
                     'directory' as type
@@ -312,9 +325,9 @@ impl Database {
                 WHERE depth > 0  -- Exclude the root folder itself
             ),
             note_paths AS (
-                SELECT 
+                SELECT
                     n.id,
-                    CASE 
+                    CASE
                         WHEN ft.depth = 0 THEN n.title || '.' || n.syntax
                         ELSE ft.path || '/' || n.title || '.' || n.syntax
                     END as path,
