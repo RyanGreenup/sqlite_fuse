@@ -1476,12 +1476,22 @@ impl Filesystem for ExampleFuseFs {
         // First, check if it's a directory being renamed
         match self.db.get_folder_id_by_path(&old_path) {
             Ok(Some(folder_id)) => {
-                // It's a directory - rename the folder
+                // It's a directory - update both name and parent
                 match self.db.update_folder(&folder_id, new_name) {
                     Ok(_success) => {
-                        self.update_inode_mappings(&old_path, &new_path);
-                        reply.ok();
-                        return;
+                        // Also update the parent relationship
+                        match self.db.update_folder_parent(&folder_id, new_parent_id.as_deref()) {
+                            Ok(_success) => {
+                                self.update_inode_mappings(&old_path, &new_path);
+                                reply.ok();
+                                return;
+                            }
+                            Err(e) => {
+                                eprintln!("[ERROR] rename: Failed to update folder parent: {}", e);
+                                reply.error(libc::EIO);
+                                return;
+                            }
+                        }
                     }
                     Err(e) => {
                         eprintln!("[ERROR] rename: Failed to update folder: {}", e);

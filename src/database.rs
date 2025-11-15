@@ -97,6 +97,26 @@ impl Database {
         Ok(rows_affected > 0)
     }
 
+    pub fn update_folder_parent(&self, id: &str, parent_id: Option<&str>) -> Result<bool> {
+        let now = Utc::now()
+            .with_timezone(&self.timezone)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let rows_affected = match parent_id {
+            Some(pid) => self.connection.execute(
+                "UPDATE folders SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
+                params![pid, now, id],
+            )?,
+            None => self.connection.execute(
+                "UPDATE folders SET parent_id = NULL, updated_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )?,
+        };
+
+        Ok(rows_affected > 0)
+    }
+
     pub fn list_folders_by_parent(&self, parent_id: Option<&str>) -> Result<Vec<Folder>> {
         let query = match parent_id {
             Some(_) => {
