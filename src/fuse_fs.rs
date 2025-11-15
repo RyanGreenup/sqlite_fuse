@@ -7,6 +7,8 @@ use std::{
 
 const DEBUG: bool = true;
 
+const USER_ID: &str = "84a9e6d1ba7f6fd229c4276440d43886";
+
 use chrono::Utc;
 use chrono_tz::{Australia::Sydney, Tz};
 const TIMEZONE: Tz = Sydney; // Australia/Sydney timezone
@@ -300,7 +302,7 @@ impl Filesystem for ExampleFuseFs {
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         eprintln!("[DEBUG] getattr: ino={}", ino);
-        
+
         // Handle root directory specially
         if ino == 1 {
             let attr = FileAttr {
@@ -433,6 +435,9 @@ impl Filesystem for ExampleFuseFs {
         _lock: Option<u64>,
         reply: ReplyData,
     ) {
+        eprintln!("[DEBUG] read: ino={}, offset={}", ino, offset);
+
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -441,63 +446,65 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Ignore directories
-        if self.is_dir(&path) {
-            return;
-        }
-
-        // Get the id
-        let id = match self.db.get_note_id_by_path(&path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("11 [ERROR] (fn open) Could not find id for {path}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
+        // Check if it's a directory - directories cannot be read as files
+        match self.db.get_folder_id_by_path(&path) {
+            Ok(Some(_folder_id)) => {
+                // It's a directory - cannot read as file
+                eprintln!("[ERROR] read: Attempted to read directory {} as file", path);
+                reply.error(libc::EISDIR);
+                return;
+            }
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note
+            }
             Err(e) => {
-                eprintln!("12 [ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("[ERROR] read: Database error checking for folder {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
-        };
+        }
 
-        // get the content
-        let note = match self.db.get_note_by_id(&id) {
-            Ok(maybe_note) => match maybe_note {
-                Some(note) => note,
-                None => {
-                    eprintln!(
-                        "13 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
-                    );
-                    reply.error(ENOENT);
-                    return;
+        // Check if it's a note/file
+        match self.db.get_note_id_by_path(&path) {
+            Ok(Some(note_id)) => {
+                // It's a note/file, get the content
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => {
+                        let content_bytes = note.content.as_bytes();
+                        let start = offset as usize;
+
+                        if start < content_bytes.len() {
+                            reply.data(&content_bytes[start..]);
+                        } else {
+                            // Offset beyond file content, return empty data
+                            reply.data(&[]);
+                        }
+                        return;
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] read: Note with id {} not found in database", note_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] read: Database error retrieving note {}: {}", note_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
                 }
-            },
-            Err(e) => {
-                eprintln!(
-                    "14 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
-                );
-                eprintln!("{e}");
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] read: Path {} not found in database", path);
                 reply.error(ENOENT);
                 return;
             }
-        };
-
-        // get the content
-        let content = note.content;
-
-        // Extract the filename and parent path
-
-        let content_bytes = content.as_bytes(); //  note_result.1.as_bytes();
-        let start = offset as usize;
-        if start < content_bytes.len() {
-            reply.data(&content_bytes[start..]);
-        } else {
-            reply.data(&[]);
+            Err(e) => {
+                eprintln!("[ERROR] read: Database error checking for note {}: {}", path, e);
+                reply.error(ENOENT);
+                return;
+            }
         }
-        return;
     }
 
     fn readdir(
@@ -561,7 +568,6 @@ impl Filesystem for ExampleFuseFs {
         let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
         // TODO this should be a command line argument
         // TODO the underlying database should filter this for every query
-        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
 
         // Handle root directory differently
         let db_titles = if path == "/" {
@@ -585,7 +591,7 @@ impl Filesystem for ExampleFuseFs {
             }
 
             // Get root notes
-            match self.db.list_notes_by_parent(None, todo_user_id) {
+            match self.db.list_notes_by_parent(None, USER_ID) {
                 Ok(notes) => {
                     for note in notes {
                         files.push(crate::database::FileType::File {
@@ -605,7 +611,7 @@ impl Filesystem for ExampleFuseFs {
             // For non-root folders, use the existing recursive function
             match self
                 .db
-                .get_folder_contents_recursive(&id.unwrap(), todo_user_id)
+                .get_folder_contents_recursive(&id.unwrap(), USER_ID)
             {
                 Ok(titles) => titles,
                 Err(e) => {
@@ -872,7 +878,6 @@ impl Filesystem for ExampleFuseFs {
 
         // TODO the create method should take id as Option or not at all.
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
-        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
         let content = "";
         let abstract_text = Some("");
         let id = match self.db.create_note(
@@ -882,7 +887,7 @@ impl Filesystem for ExampleFuseFs {
             content,
             &syntax,
             parent_id.as_deref(),
-            todo_user_id,
+            USER_ID,
         ) {
             // Get the returned id in case the API changes
             Ok(id) => id,
@@ -1811,7 +1816,6 @@ impl Filesystem for ExampleFuseFs {
         let content = "";
         let abstract_text = Some("");
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
-        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
         let _id = match self.db.create_note(
             &id,
             &title,
@@ -1819,7 +1823,7 @@ impl Filesystem for ExampleFuseFs {
             content,
             &syntax,
             parent_id.as_deref(),
-            todo_user_id,
+            USER_ID,
         ) {
             // Get the returned id in case the API changes
             Ok(id) => id,
@@ -1907,10 +1911,9 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // NOTE CASCADE on a Foreign Key would be nice here
-        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
         let has_children = match self
             .db
-            .get_child_count(Some(&parent_id), Some(todo_user_id))
+            .get_child_count(Some(&parent_id), Some(USER_ID))
         {
             Ok((fc, nc)) => nc + fc > 0,
             Err(e) => {
