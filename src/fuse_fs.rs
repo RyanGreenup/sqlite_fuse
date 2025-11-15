@@ -182,7 +182,6 @@ impl ExampleFuseFs {
 
 impl Filesystem for ExampleFuseFs {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        // Get the Full Path
         let name_str = match name.to_str() {
             Some(s) => s,
             None => {
@@ -191,7 +190,7 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        eprintln!("[DEBUG] 1 lookup: parent={}, name={}", parent, name_str);
+        eprintln!("[DEBUG] lookup: parent={}, name={}", parent, name_str);
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -209,112 +208,94 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{name_str}")
         };
 
-        // Then it must be a note
-        match self.db.get_note_id_by_path(&full_path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => {
-                    // So it is a note
-                    let note = match self.db.get_note_by_id(&id) {
-                        Ok(maybe_note) => match maybe_note {
-                            Some(note) => note,
-                            None => {
-                                eprintln!(
-                                    "[ERROR] 8382920 (fn lookup) Unable to find note in database with id={id} {full_path}"
-                                );
-                                reply.error(ENOENT);
-                                return;
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!(
-                                "[ERROR]  328323290 (fn lookup) Unable to find search for in database with id={id} {full_path}"
-                            );
-                            reply.error(ENOENT);
-                            return;
-                        }
-                    };
-
-                    let inode = self.get_or_create_inode(&full_path);
-                    let content_size = note.content.len();
-
-                    // TODO: Parse timestamp strings properly
-                    let attr = FileAttr {
-                        ino: inode,
-                        size: content_size as u64,
-                        blocks: content_size.div_ceil(512) as u64,
-                        atime: UNIX_EPOCH,  // TODO: Parse created_at
-                        mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                        ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                        crtime: UNIX_EPOCH, // TODO: Parse created_at
-                        kind: FileType::RegularFile,
-                        perm: 0o644,
-                        nlink: 1,
-                        uid: 501,
-                        gid: 20,
-                        rdev: 0,
-                        flags: 0,
-                        blksize: 512,
-                    };
-                    reply.entry(&TTL, &attr, 0);
-                    return;
-                }
-                None => {
-                    let folder_id = if full_path == "/" {
-                        eprintln!("2383209329032 [ERROR Maybe] Should How do we handle root in lookup?");
-                        reply.error(ENOENT);
-                        return;
-                    } else {
-                        match self.db.get_folder_id_by_path(&full_path) {
-                            Ok(maybe_id) => maybe_id,
-                            Err(e) => {
-                                eprintln!(
-                                    "9082390320932 [ERROR] (fn lookup) Unable to query database for id for the directory {full_path}: {e}"
-                                );
-                                reply.error(ENOENT);
-                                return;
-                            }
-                        }
-                    };
-                    match folder_id {
-                        Some(id) => {
-                            // TODO get the times etc from the database using the id
-                            let inode = self.get_or_create_inode(&full_path);
-                            let attr = FileAttr {
-                                ino: inode,
-                                size: 0,
-                                blocks: 0,
-                                atime: UNIX_EPOCH,  // TODO: Parse created_at
-                                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                                crtime: UNIX_EPOCH, // TODO: Parse created_at
-                                kind: FileType::Directory,
-                                perm: 0o755,
-                                nlink: 2,
-                                uid: 501,
-                                gid: 20,
-                                rdev: 0,
-                                flags: 0,
-                                blksize: 512,
-                            };
-                            reply.entry(&TTL, &attr, 0);
-                            return;
-                        }
-                        None => {
-                            eprintln!(
-                                "lkdkldskl [ERROR] (fn lookup) Unable to find any id in database for {full_path}"
-                            );
-                            reply.error(ENOENT);
-                            return;
-                        }
-                    }
-                }
-            },
+        // First, check if it's a folder/directory
+        match self.db.get_folder_id_by_path(&full_path) {
+            Ok(Some(folder_id)) => {
+                // It's a directory
+                let inode = self.get_or_create_inode(&full_path);
+                let attr = FileAttr {
+                    ino: inode,
+                    size: 0,
+                    blocks: 0,
+                    atime: UNIX_EPOCH,
+                    mtime: UNIX_EPOCH,
+                    ctime: UNIX_EPOCH,
+                    crtime: UNIX_EPOCH,
+                    kind: FileType::Directory,
+                    perm: 0o755,
+                    nlink: 2,
+                    uid: 501,
+                    gid: 20,
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 512,
+                };
+                reply.entry(&TTL, &attr, 0);
+                return;
+            }
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note
+            }
             Err(e) => {
-                eprintln!("3 [ERROR] (fn open) Could not find id for {full_path}: {e}");
+                eprintln!("[ERROR] lookup: Database error checking for folder {}: {}", full_path, e);
                 reply.error(ENOENT);
                 return;
             }
-        };
+        }
+
+        // Second, check if it's a note/file
+        match self.db.get_note_id_by_path(&full_path) {
+            Ok(Some(note_id)) => {
+                // It's a note/file
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => {
+                        let inode = self.get_or_create_inode(&full_path);
+                        let content_size = note.content.len();
+
+                        let attr = FileAttr {
+                            ino: inode,
+                            size: content_size as u64,
+                            blocks: content_size.div_ceil(512) as u64,
+                            atime: UNIX_EPOCH,
+                            mtime: UNIX_EPOCH,
+                            ctime: UNIX_EPOCH,
+                            crtime: UNIX_EPOCH,
+                            kind: FileType::RegularFile,
+                            perm: 0o644,
+                            nlink: 1,
+                            uid: 501,
+                            gid: 20,
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        reply.entry(&TTL, &attr, 0);
+                        return;
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] lookup: Note with id {} not found in database", note_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] lookup: Database error retrieving note {}: {}", note_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] lookup: Path {} not found in database", full_path);
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ERROR] lookup: Database error checking for note {}: {}", full_path, e);
+                reply.error(ENOENT);
+                return;
+            }
+        }
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
