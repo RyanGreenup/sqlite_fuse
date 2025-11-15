@@ -271,6 +271,74 @@ impl Database {
         }
     }
 
+    pub fn get_folder_contents_recursive(&self, folder_id: &str, user_id: &str) -> Result<Vec<FileType>> {
+        let query = "
+            WITH RECURSIVE folder_tree AS (
+                -- Base case: the specified folder
+                SELECT 
+                    id,
+                    title,
+                    parent_id,
+                    0 as depth,
+                    title as path
+                FROM folders
+                WHERE id = ?1
+                
+                UNION ALL
+                
+                -- Recursive case: child folders
+                SELECT 
+                    f.id,
+                    f.title,
+                    f.parent_id,
+                    ft.depth + 1 as depth,
+                    CASE 
+                        WHEN ft.depth = 0 THEN f.title
+                        ELSE ft.path || '/' || f.title
+                    END as path
+                FROM folders f
+                INNER JOIN folder_tree ft ON f.parent_id = ft.id
+            ),
+            folder_paths AS (
+                SELECT 
+                    id,
+                    path,
+                    'directory' as type
+                FROM folder_tree
+                WHERE depth > 0  -- Exclude the root folder itself
+            ),
+            note_paths AS (
+                SELECT 
+                    n.id,
+                    CASE 
+                        WHEN ft.depth = 0 THEN n.title || '.' || n.syntax
+                        ELSE ft.path || '/' || n.title || '.' || n.syntax
+                    END as path,
+                    'file' as type
+                FROM notes n
+                INNER JOIN folder_tree ft ON (n.parent_id = ft.id OR (n.parent_id IS NULL AND ft.id = ?1))
+                WHERE n.user_id = ?2
+            )
+            SELECT path, type FROM folder_paths
+            UNION ALL
+            SELECT path, type FROM note_paths
+            ORDER BY path";
+
+        let mut stmt = self.connection.prepare(query)?;
+        let file_iter = stmt.query_map(params![folder_id, user_id], |row| {
+            let path: String = row.get(0)?;
+            let file_type: String = row.get(1)?;
+            
+            match file_type.as_str() {
+                "directory" => Ok(FileType::Directory { path }),
+                "file" => Ok(FileType::File { path }),
+                _ => Err(rusqlite::Error::InvalidColumnType(1, "type".to_string(), rusqlite::types::Type::Text))
+            }
+        })?;
+
+        file_iter.collect()
+    }
+
     /// Maps a database row to a Folder struct, handling datetime parsing.
     /// Extracted as a helper to avoid code duplication across query methods.
     fn map_folder_row(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
@@ -364,6 +432,12 @@ pub struct Note {
     pub user_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub enum FileType {
+    Directory { path: String },
+    File { path: String },
 }
 
 #[cfg(test)]
@@ -1148,5 +1222,194 @@ mod tests {
             .expect("Failed to get deep note path")
             .expect("Deep note path should exist");
         assert_eq!(deep_path, "Level1/Level2/Level3/Level4/Level5/deep.md");
+    }
+
+    #[test]
+    fn test_get_folder_contents_recursive() {
+        let db = setup_test_database();
+        let user_id = "recursive_test_user";
+        
+        // Create nested folder structure:
+        // Root/
+        //   ├── Documents/
+        //   │   ├── Projects/
+        //   │   │   ├── project1.md
+        //   │   │   └── SubProjects/
+        //   │   │       └── subproject.txt
+        //   │   └── notes.md
+        //   ├── Work/
+        //   │   └── agenda.org
+        //   └── readme.md
+        
+        let root_id = db.create_folder("Root", None)
+            .expect("Failed to create Root folder");
+        let docs_id = db.create_folder("Documents", Some(&root_id))
+            .expect("Failed to create Documents folder");
+        let projects_id = db.create_folder("Projects", Some(&docs_id))
+            .expect("Failed to create Projects folder");
+        let subprojects_id = db.create_folder("SubProjects", Some(&projects_id))
+            .expect("Failed to create SubProjects folder");
+        let work_id = db.create_folder("Work", Some(&root_id))
+            .expect("Failed to create Work folder");
+
+        // Create notes
+        db.create_note("readme", "readme", None, "Root readme", "md", Some(&root_id), user_id)
+            .expect("Failed to create root readme");
+        db.create_note("notes", "notes", None, "Doc notes", "md", Some(&docs_id), user_id)
+            .expect("Failed to create docs notes");
+        db.create_note("project1", "project1", None, "Project content", "md", Some(&projects_id), user_id)
+            .expect("Failed to create project1");
+        db.create_note("subproject", "subproject", None, "Sub content", "txt", Some(&subprojects_id), user_id)
+            .expect("Failed to create subproject");
+        db.create_note("agenda", "agenda", None, "Work agenda", "org", Some(&work_id), user_id)
+            .expect("Failed to create work agenda");
+
+        // Test getting all contents under root
+        let contents = db.get_folder_contents_recursive(&root_id, user_id)
+            .expect("Failed to get recursive contents");
+
+        // Extract paths for easier testing
+        let paths: Vec<String> = contents.iter().map(|item| {
+            match item {
+                FileType::Directory { path } => path.clone(),
+                FileType::File { path } => path.clone(),
+            }
+        }).collect();
+
+        // Check that we have all expected items
+        assert!(paths.contains(&"Documents".to_string()));
+        assert!(paths.contains(&"Documents/Projects".to_string()));
+        assert!(paths.contains(&"Documents/Projects/SubProjects".to_string()));
+        assert!(paths.contains(&"Work".to_string()));
+        assert!(paths.contains(&"readme.md".to_string()));
+        assert!(paths.contains(&"Documents/notes.md".to_string()));
+        assert!(paths.contains(&"Documents/Projects/project1.md".to_string()));
+        assert!(paths.contains(&"Documents/Projects/SubProjects/subproject.txt".to_string()));
+        assert!(paths.contains(&"Work/agenda.org".to_string()));
+
+        // Check types are correct
+        let directories: Vec<&String> = contents.iter().filter_map(|item| {
+            match item {
+                FileType::Directory { path } => Some(path),
+                FileType::File { .. } => None,
+            }
+        }).collect();
+
+        let files: Vec<&String> = contents.iter().filter_map(|item| {
+            match item {
+                FileType::File { path } => Some(path),
+                FileType::Directory { .. } => None,
+            }
+        }).collect();
+
+        assert_eq!(directories.len(), 4); // Documents, Projects, SubProjects, Work
+        assert_eq!(files.len(), 5); // readme, notes, project1, subproject, agenda
+
+        // Test getting contents under Documents folder only
+        let docs_contents = db.get_folder_contents_recursive(&docs_id, user_id)
+            .expect("Failed to get docs contents");
+
+        let docs_paths: Vec<String> = docs_contents.iter().map(|item| {
+            match item {
+                FileType::Directory { path } => path.clone(),
+                FileType::File { path } => path.clone(),
+            }
+        }).collect();
+
+        assert!(docs_paths.contains(&"Projects".to_string()));
+        assert!(docs_paths.contains(&"Projects/SubProjects".to_string()));
+        assert!(docs_paths.contains(&"notes.md".to_string()));
+        assert!(docs_paths.contains(&"Projects/project1.md".to_string()));
+        assert!(docs_paths.contains(&"Projects/SubProjects/subproject.txt".to_string()));
+        
+        // Should not contain Work or root items
+        assert!(!docs_paths.contains(&"Work".to_string()));
+        assert!(!docs_paths.contains(&"readme.md".to_string()));
+        assert!(!docs_paths.contains(&"Work/agenda.org".to_string()));
+    }
+
+    #[test]
+    fn test_get_folder_contents_recursive_empty_folder() {
+        let db = setup_test_database();
+        let user_id = "empty_test_user";
+        
+        // Create empty folder
+        let empty_id = db.create_folder("Empty", None)
+            .expect("Failed to create empty folder");
+
+        let contents = db.get_folder_contents_recursive(&empty_id, user_id)
+            .expect("Failed to get empty folder contents");
+
+        assert_eq!(contents.len(), 0);
+    }
+
+    #[test]
+    fn test_get_folder_contents_recursive_user_filtering() {
+        let db = setup_test_database();
+        let user1 = "user1";
+        let user2 = "user2";
+        
+        // Create folder structure
+        let shared_folder_id = db.create_folder("Shared", None)
+            .expect("Failed to create shared folder");
+
+        // Create notes for different users in same folder
+        db.create_note("note1", "note1", None, "User 1 content", "md", Some(&shared_folder_id), user1)
+            .expect("Failed to create user1 note");
+        db.create_note("note2", "note2", None, "User 2 content", "md", Some(&shared_folder_id), user2)
+            .expect("Failed to create user2 note");
+
+        // Test that each user only sees their own notes
+        let user1_contents = db.get_folder_contents_recursive(&shared_folder_id, user1)
+            .expect("Failed to get user1 contents");
+        let user2_contents = db.get_folder_contents_recursive(&shared_folder_id, user2)
+            .expect("Failed to get user2 contents");
+
+        assert_eq!(user1_contents.len(), 1);
+        assert_eq!(user2_contents.len(), 1);
+
+        // Check that user1 sees note1.md and user2 sees note2.md
+        match &user1_contents[0] {
+            FileType::File { path } => assert_eq!(path, "note1.md"),
+            _ => panic!("Expected file, got directory"),
+        }
+
+        match &user2_contents[0] {
+            FileType::File { path } => assert_eq!(path, "note2.md"),
+            _ => panic!("Expected file, got directory"),
+        }
+    }
+
+    #[test]
+    fn test_get_folder_contents_recursive_single_level() {
+        let db = setup_test_database();
+        let user_id = "single_level_user";
+        
+        // Create folder with only direct children
+        let folder_id = db.create_folder("SingleLevel", None)
+            .expect("Failed to create folder");
+        let child_folder_id = db.create_folder("ChildFolder", Some(&folder_id))
+            .expect("Failed to create child folder");
+
+        db.create_note("file1", "file1", None, "Content 1", "txt", Some(&folder_id), user_id)
+            .expect("Failed to create file1");
+        db.create_note("file2", "file2", None, "Content 2", "md", Some(&folder_id), user_id)
+            .expect("Failed to create file2");
+
+        let contents = db.get_folder_contents_recursive(&folder_id, user_id)
+            .expect("Failed to get single level contents");
+
+        assert_eq!(contents.len(), 3); // 1 folder + 2 files
+
+        let paths: Vec<String> = contents.iter().map(|item| {
+            match item {
+                FileType::Directory { path } => path.clone(),
+                FileType::File { path } => path.clone(),
+            }
+        }).collect();
+
+        assert!(paths.contains(&"ChildFolder".to_string()));
+        assert!(paths.contains(&"file1.txt".to_string()));
+        assert!(paths.contains(&"file2.md".to_string()));
     }
 }

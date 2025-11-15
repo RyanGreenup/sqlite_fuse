@@ -8,6 +8,7 @@ use fuser::MountOption;
 
 use crate::database::Database;
 
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
