@@ -659,7 +659,9 @@ impl Filesystem for ExampleFuseFs {
     /// Handle directory creation operations
     ///
     /// Key behaviors:
-    /// - Creates a note in the database that represents a directory
+    /// - Creates a folder in the database
+    /// - Validates parent directory exists
+    /// - Checks for name conflicts
     fn mkdir(
         &mut self,
         _req: &Request,
@@ -677,6 +679,8 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        eprintln!("[DEBUG] mkdir: parent={}, name={}", parent, folder_name);
+
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
             Some(path) => path.clone(),
@@ -685,7 +689,6 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
-        // Construct the candidate full path (if successful)
 
         // Create the full path for the new directory
         let full_path = if parent_path == "/" {
@@ -694,65 +697,97 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{folder_name}")
         };
 
-        // Get parent ID - None for root, Some(id) for other paths
+        // Check if directory already exists
+        match self.db.get_folder_id_by_path(&full_path) {
+            Ok(Some(_existing_id)) => {
+                eprintln!("[ERROR] mkdir: Directory {} already exists", full_path);
+                reply.error(libc::EEXIST);
+                return;
+            }
+            Ok(None) => {
+                // Good, directory doesn't exist
+            }
+            Err(e) => {
+                eprintln!("[ERROR] mkdir: Database error checking for existing directory {}: {}", full_path, e);
+                reply.error(libc::EIO);
+                return;
+            }
+        }
+
+        // Check if a file/note with the same name exists
+        match self.db.get_note_id_by_path(&full_path) {
+            Ok(Some(_existing_id)) => {
+                eprintln!("[ERROR] mkdir: File {} already exists", full_path);
+                reply.error(libc::EEXIST);
+                return;
+            }
+            Ok(None) => {
+                // Good, no file with this name
+            }
+            Err(e) => {
+                eprintln!("[ERROR] mkdir: Database error checking for existing file {}: {}", full_path, e);
+                reply.error(libc::EIO);
+                return;
+            }
+        }
+
+        // Get parent folder ID - None for root, Some(id) for other paths
         let parent_id = if parent_path == "/" {
             None
         } else {
             match self.db.get_folder_id_by_path(&parent_path) {
-                Ok(maybe_id) => maybe_id,
+                Ok(Some(id)) => Some(id),
+                Ok(None) => {
+                    eprintln!("[ERROR] mkdir: Parent directory {} not found", parent_path);
+                    reply.error(ENOENT);
+                    return;
+                }
                 Err(e) => {
-                    eprintln!(
-                        "20 [ERROR] Unable to query database for id for the directory {parent_path}"
-                    );
-                    eprintln!("{e}");
+                    eprintln!("[ERROR] mkdir: Database error checking parent directory {}: {}", parent_path, e);
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // TODO the create method should take id as Option or not at all.
-        let _id = match self.db.create_folder(folder_name, parent_id.as_deref()) {
-            // Get the returned id in case the API changes
+        // Create the folder in the database
+        let _folder_id = match self.db.create_folder(folder_name, parent_id.as_deref()) {
             Ok(id) => id,
             Err(e) => {
-                eprintln!("21 [ERROR] Unable to create folder for {full_path}: {e}");
-                reply.error(ENOENT);
+                eprintln!("[ERROR] mkdir: Unable to create folder {}: {}", full_path, e);
+                reply.error(libc::EIO);
                 return;
             }
         };
 
-        // Use the note_id (either existing or newly created) for further operations
-        {
-            // Create inode for the new directory
-            let inode = self.get_or_create_inode(&full_path);
+        // Create inode for the new directory
+        let inode = self.get_or_create_inode(&full_path);
 
-            // Get current timestamp for attributes
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+        // Get current timestamp for attributes
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-            let attr = FileAttr {
-                ino: inode,
-                size: 0,
-                blocks: 0,
-                atime: UNIX_EPOCH + Duration::from_secs(now),
-                mtime: UNIX_EPOCH + Duration::from_secs(now),
-                ctime: UNIX_EPOCH + Duration::from_secs(now),
-                crtime: UNIX_EPOCH + Duration::from_secs(now),
-                kind: FileType::Directory,
-                perm: 0o755,
-                nlink: 2,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
+        let attr = FileAttr {
+            ino: inode,
+            size: 0,
+            blocks: 0,
+            atime: UNIX_EPOCH + Duration::from_secs(now),
+            mtime: UNIX_EPOCH + Duration::from_secs(now),
+            ctime: UNIX_EPOCH + Duration::from_secs(now),
+            crtime: UNIX_EPOCH + Duration::from_secs(now),
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: 501,
+            gid: 20,
+            rdev: 0,
+            flags: 0,
+            blksize: 512,
+        };
 
-            reply.entry(&TTL, &attr, 0);
-        }
+        reply.entry(&TTL, &attr, 0);
     }
 
     /// Handle file creation operations
