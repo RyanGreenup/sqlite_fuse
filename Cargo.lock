@@ -211,6 +211,7 @@ dependencies = [
  "fuser",
  "libc",
  "rusqlite",
+ "serde",
  "uuid",
 ]
 

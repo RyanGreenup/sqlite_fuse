@@ -10,7 +10,7 @@ CREATE TABLE folders (
   parent_id TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (parent_id) REFERENCES notes(id) ON DELETE CASCADE
+  FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
 );
 
 ------------------------------------------------------------

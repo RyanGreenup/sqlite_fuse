@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 mod database;
-mod fuse_fs;
+// mod fuse_fs;
+// use crate::{database::Database, fuse_fs::ExampleFuseFs};
 
 use clap::{Parser, Subcommand};
 use fuser::MountOption;
 
-use crate::fuse_fs::ExampleFuseFs;
+use crate::database::Database;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -43,18 +44,21 @@ fn main() {
         None => {}
     }
 
-    let fs = match ExampleFuseFs::new() {
-        Ok(fs) => fs,
-        Err(e) => {
-            eprintln!("Failed to open database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let con = rusqlite::Connection::open_in_memory().expect("Unable to Connect to Database");
+    let db = Database::new(con, Some(chrono_tz::Australia::Sydney));
 
-    let mut options = vec![MountOption::FSName("fuse_ecample".to_string())];
-    // These require specific behaviour in  /etc/fuse.conf because umount requires root
-    // root is not the user so it gets tricky
-    // options.push(MountOption::AutoUnmount);
-    // options.push(MountOption::AllowRoot);
-    fuser::mount2(fs, cli.mountpoint, &options).unwrap();
+    // let fs = match ExampleFuseFs::new() {
+    //     Ok(fs) => fs,
+    //     Err(e) => {
+    //         eprintln!("Failed to open database: {e}");
+    //         std::process::exit(1);
+    //     }
+    // };
+    //
+    // let mut options = vec![MountOption::FSName("fuse_ecample".to_string())];
+    // // These require specific behaviour in  /etc/fuse.conf because umount requires root
+    // // root is not the user so it gets tricky
+    // // options.push(MountOption::AutoUnmount);
+    // // options.push(MountOption::AllowRoot);
+    // fuser::mount2(fs, cli.mountpoint, &options).unwrap();
 }

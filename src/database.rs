@@ -1,233 +1,247 @@
-use std::collections::HashMap;
-use uuid::Uuid;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono_tz::Tz;
+use rusqlite::{Connection, Result, params};
 
 pub struct Database {
-    pub items: HashMap<String, Item>,
-}
-#[derive(Clone)]
-pub struct Item {
-    pub title: String,
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub content: Option<String>,
-}
-
-impl Item {
-    fn new(id: &str, title: &str, parent_id: Option<&str>) -> Self {
-        return Self {
-            title: title.to_string(),
-            id: id.to_string(),
-            parent_id: parent_id.map(|s| s.to_string()),
-            content: None,
-        };
-    }
-}
-
-fn generate_uuid() -> String {
-    Uuid::new_v4().to_string()
-}
-
-impl Default for Database {
-    fn default() -> Self {
-        let mut db = Self {
-            items: HashMap::new(),
-        };
-        
-        // Add default entries with predefined IDs
-        db.create(Some("root"), "Home", None);
-        db.create(Some("documents"), "Documents", Some("root"));
-        db.create(Some("projects"), "Projects", Some("root"));
-        db.create(Some("readme"), "README.txt", Some("documents"));
-        
-        // Add some content to the README file
-        if let Some(readme) = db.items.get_mut("readme") {
-            readme.content = Some("This is a test file in the FUSE filesystem.".to_string());
-        }
-        
-        db
-    }
+    pub connection: Connection,
+    pub timezone: Tz,
 }
 
 impl Database {
-    // Init
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(connection: Connection, timezone: Option<Tz>) -> Self {
+        Self {
+            connection,
+            timezone: timezone.unwrap_or(chrono_tz::UTC),
+        }
     }
-    // Create
-    pub fn create(&mut self, id: Option<&str>, title: &str, parent_id: Option<&str>) {
-        let id = match id {
-            Some(id) => id.to_string(),
-            None => generate_uuid(),
+
+    pub fn with_utc(connection: Connection) -> Self {
+        Self::new(connection, None)
+    }
+    pub fn create_folder(&self, title: &str, parent_id: Option<&str>) -> Result<String> {
+        let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
+        let now = Utc::now()
+            .with_timezone(&self.timezone)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        self.connection.execute(
+            "INSERT INTO folders (id, title, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, title, parent_id, now],
+        )?;
+
+        Ok(id)
+    }
+
+    pub fn get_folder_by_id(&self, id: &str) -> Result<Option<Folder>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE id = ?1",
+        )?;
+
+        let mut folder_iter = stmt.query_map([id], |row| {
+            Ok(Folder {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                parent_id: row.get(2)?,
+                created_at: NaiveDateTime::parse_from_str(
+                    &row.get::<_, String>(3)?,
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        3,
+                        "created_at".to_string(),
+                        rusqlite::types::Type::Text,
+                    )
+                })?
+                .and_utc(),
+                updated_at: NaiveDateTime::parse_from_str(
+                    &row.get::<_, String>(4)?,
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        4,
+                        "updated_at".to_string(),
+                        rusqlite::types::Type::Text,
+                    )
+                })?
+                .and_utc(),
+            })
+        })?;
+
+        match folder_iter.next() {
+            Some(folder) => Ok(Some(folder?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update_folder(&self, id: &str, title: &str) -> Result<bool> {
+        let now = Utc::now()
+            .with_timezone(&self.timezone)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let rows_affected = self.connection.execute(
+            "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title, now, id],
+        )?;
+
+        Ok(rows_affected > 0)
+    }
+
+    pub fn delete_folder(&self, id: &str) -> Result<bool> {
+        let rows_affected = self
+            .connection
+            .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+
+        Ok(rows_affected > 0)
+    }
+
+    pub fn list_folders_by_parent(&self, parent_id: Option<&str>) -> Result<Vec<Folder>> {
+        let query = match parent_id {
+            Some(_) => "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id = ?1 ORDER BY title",
+            None => "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id IS NULL ORDER BY title"
         };
-        let new_item = Item::new(&id, title, parent_id);
-        self.items.insert(id.clone(), new_item);
-    }
-    // Read
-    pub fn get(&self, id: &str) -> Option<&Item> {
-        self.items.get(id)
-    }
-    pub fn get_all(&self) -> &HashMap<String, Item> {
-        &self.items
-    }
-    // Update
-    pub fn update(&mut self, id: &str, title: Option<&str>, parent_id: Option<&str>) {
-        // Get the current Value
-        match self.items.get(id) {
-            Some(current) => {
-                let mut current = current.clone();
-                if let Some(title) = title {
-                    current.title = title.to_string();
-                }
-                current.parent_id = parent_id.map(|s| s.to_string());
-                self.items.insert(id.to_string(), current.clone());
-            }
-            None => {
-                let title = title.expect("Cannot Update Note that doesn't exist, failed to create new item as title is None");
-                self.create(Some(id), title, parent_id);
-            }
-        }
-    }
-    
-    // Update content
-    pub fn update_content(&mut self, id: &str, content: &str) -> Result<(), String> {
-        match self.items.get_mut(id) {
-            Some(item) => {
-                item.content = Some(content.to_string());
-                Ok(())
-            }
-            None => {
-                Err(format!("Item with id {} not found", id))
-            }
-        }
-    }
-    /// Deletes an Item from the database
-    /// Returns the item like pop
-    pub fn delete(&mut self, id: &str) -> Option<Item> {
-        self.items.remove(id)
+
+        let mut stmt = self.connection.prepare(query)?;
+        let folder_iter = match parent_id {
+            Some(pid) => stmt.query_map([pid], Self::map_folder_row)?,
+            None => stmt.query_map([], Self::map_folder_row)?
+        };
+
+        folder_iter.collect()
     }
 
-    pub fn get_child_count(&self, id: &str) -> u32 {
-        let mut count = 0;
-        for item in self.items.values() {
-            if item.parent_id.as_ref() == Some(&id.to_string()) {
-                count += 1;
-            }
-        }
-        count
+    /// Maps a database row to a Folder struct, handling datetime parsing.
+    /// Extracted as a helper to avoid code duplication across query methods.
+    fn map_folder_row(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
+        Ok(Folder {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            parent_id: row.get(2)?,
+            created_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(3)?, "%Y-%m-%d %H:%M:%S")
+                .map_err(|_| rusqlite::Error::InvalidColumnType(3, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .and_utc(),
+            updated_at: NaiveDateTime::parse_from_str(&row.get::<_, String>(4)?, "%Y-%m-%d %H:%M:%S")
+                .map_err(|_| rusqlite::Error::InvalidColumnType(4, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .and_utc(),
+        })
     }
+}
 
-    pub fn get_children(&self, id: &str) -> Vec<&Item> {
-        let mut children = vec![];
-        for item in self.items.values() {
-            if let Some(parent_id) = &item.parent_id {
-                if *parent_id == id {
-                    children.push(item);
-                }
-            }
-        }
-        children
-    }
-
-    fn get_parent_title(&self, id: &str) -> Option<String> {
-        self.get(id).map(|item| item.title.clone())
-    }
-
-    pub fn get_path(&self, id: &str) -> String {
-        let mut components = Vec::new();
-        let mut current_id = Some(id.to_string());
-
-        while let Some(ref id) = current_id {
-            if let Some(item) = self.get(id) {
-                components.push(item.title.clone());
-                current_id = item.parent_id.clone();
-            } else {
-                break;
-            }
-        }
-
-        components.reverse();
-        components.join("/")
-    }
-
-    pub fn get_content(&self, id: &str) -> Option<String> {
-        if let Some(item) = self.items.get(id) {
-            if self.get_child_count(id) == 0 {
-                // Files (leaf nodes) can have content
-                item.content.clone().or_else(|| Some(String::new()))
-            } else {
-                // Directories have no content
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn get_id_from_path(&self, path: &str) -> Option<String> {
-        if path == "/" {
-            return None; // Root path has no ID
-        }
-        
-        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let mut current_id = None;
-
-        for component in components {
-            let mut found = false;
-            for item in self.items.values() {
-                if item.parent_id == current_id && item.title == component {
-                    current_id = Some(item.id.clone());
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return None;
-            }
-        }
-
-        current_id
-    }
-
-    pub fn is_path_dir(&self, path: &str) -> Option<bool> {
-        let id = self.get_id_from_path(path);
-        if let Some(id) = id {
-            Some(self.get_child_count(&id) > 0)
-        } else {
-            None
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct Folder {
+    pub id: String,
+    pub title: String,
+    pub parent_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono_tz;
+    use rusqlite::Connection;
+
+    fn setup_test_database() -> Database {
+        let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
+
+        // Read and execute the init.sql file
+        let init_sql = include_str!("../sql/init.sql");
+        conn.execute_batch(init_sql)
+            .expect("Failed to initialize database");
+
+        Database::new(conn, Some(chrono_tz::US::Eastern))
+    }
 
     #[test]
-    fn test_get_path_and_get_id_from_path_are_inverse() {
-        let mut db = Database::new();
+    fn test_folder_crud_operations() {
+        let db = setup_test_database();
 
-        // Create a hierarchy: root -> parent -> child
-        db.create("root", "Root", None);
-        db.create("parent", "Parent", Some("root"));
-        db.create("child", "Child", Some("parent"));
+        // Create root folder
+        let root_id = db
+            .create_folder("Documents", None)
+            .expect("Failed to create root folder");
+        assert!(!root_id.is_empty());
 
-        // Test that get_path and get_id_from_path are inverses
-        let test_cases = vec!["root", "parent", "child"];
+        // Create child folder
+        let child_id = db
+            .create_folder("Projects", Some(&root_id))
+            .expect("Failed to create child folder");
+        assert!(!child_id.is_empty());
+        assert_ne!(root_id, child_id);
 
-        for id in test_cases {
-            let path = db.get_path(id);
-            let recovered_id = db.get_id_from_path(&path);
+        // Read back the root folder
+        let folder = db
+            .get_folder_by_id(&root_id)
+            .expect("Failed to query folder")
+            .expect("Root folder not found");
 
-            assert_eq!(
-                recovered_id,
-                Some(id.to_string()),
-                "get_path and get_id_from_path should be inverses for id: {}",
-                id
-            );
-        }
+        assert_eq!(folder.id, root_id);
+        assert_eq!(folder.title, "Documents");
+        assert_eq!(folder.parent_id, None);
+        assert!(!folder.created_at.to_string().is_empty());
+        assert!(!folder.updated_at.to_string().is_empty());
 
-        // Test with a non-existent path
-        assert_eq!(db.get_id_from_path("Root/NonExistent"), None);
-        assert_eq!(db.get_id_from_path("NonExistent"), None);
+        // Read back the child folder
+        let child_folder = db
+            .get_folder_by_id(&child_id)
+            .expect("Failed to query child folder")
+            .expect("Child folder not found");
+
+        assert_eq!(child_folder.id, child_id);
+        assert_eq!(child_folder.title, "Projects");
+        assert_eq!(child_folder.parent_id, Some(root_id.clone()));
+
+        // Test update
+        let updated = db
+            .update_folder(&root_id, "My Documents")
+            .expect("Failed to update folder");
+        assert!(updated);
+
+        let updated_folder = db
+            .get_folder_by_id(&root_id)
+            .expect("Failed to query updated folder")
+            .expect("Updated folder not found");
+        assert_eq!(updated_folder.title, "My Documents");
+
+        // Test list folders by parent
+        let children = db
+            .list_folders_by_parent(Some(&root_id))
+            .expect("Failed to list child folders");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].title, "Projects");
+
+        // Test delete
+        let deleted = db
+            .delete_folder(&child_id)
+            .expect("Failed to delete folder");
+        assert!(deleted);
+
+        let deleted_folder = db
+            .get_folder_by_id(&child_id)
+            .expect("Failed to query deleted folder");
+        assert!(deleted_folder.is_none());
+    }
+
+    #[test]
+    fn test_timezone_functionality() {
+        let db = setup_test_database();
+
+        let folder_id = db
+            .create_folder("Test Timezone", None)
+            .expect("Failed to create folder for timezone test");
+
+        let folder = db
+            .get_folder_by_id(&folder_id)
+            .expect("Failed to query folder")
+            .expect("Folder not found");
+
+        // The timestamps should be stored and retrieved properly
+        // Note: The actual timezone conversion happens during storage
+        assert!(!folder.created_at.to_string().is_empty());
+        assert!(!folder.updated_at.to_string().is_empty());
+        assert_eq!(folder.created_at, folder.updated_at);
     }
 }
