@@ -8,8 +8,9 @@ use fuser::MountOption;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Optional name to operate on
     mountpoint: String,
+    // Optional Database (in memory otherwise)
+    database: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -41,7 +42,10 @@ fn main() {
         None => {}
     }
 
-    let con = rusqlite::Connection::open_in_memory().expect("Unable to Connect to Database");
+    let con = match cli.database {
+        Some(path) => rusqlite::Connection::open(path).expect("Unable to Connect to Database"),
+        None => rusqlite::Connection::open_in_memory().expect("Unable to Connect to Database"),
+    };
     // let db = Database::new(con, Some(chrono_tz::Australia::Sydney));
 
     let fs = match ExampleFuseFs::new(con, Some(chrono_tz::Australia::Sydney)) {
