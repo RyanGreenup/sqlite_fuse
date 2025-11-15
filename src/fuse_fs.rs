@@ -777,7 +777,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         eprintln!(
-            "21 [DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}",
+            "[DEBUG] create: parent={}, name={}, mode={:#o}, flags={:#x}",
             parent, file_name, mode, flags
         );
 
@@ -790,20 +790,34 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Construct the candidate full_path
+        // Construct the full path
         let full_path = if parent_path == "/" {
             format!("/{file_name}")
         } else {
             format!("{parent_path}/{file_name}")
         };
 
+        // Check if file already exists
+        match self.db.get_note_id_by_path(&full_path) {
+            Ok(Some(_existing_id)) => {
+                eprintln!("[ERROR] create: File {} already exists", full_path);
+                reply.error(libc::EEXIST);
+                return;
+            }
+            Ok(None) => {
+                // File doesn't exist, good to proceed
+            }
+            Err(e) => {
+                eprintln!("[ERROR] create: Database error checking for existing file {}: {}", full_path, e);
+                reply.error(libc::EIO);
+                return;
+            }
+        }
+
         // Handle editor temporary files by creating them as regular empty files
         // but don't store them in the database
         if Self::is_editor_temp_file(file_name) {
-            // Create a temporary inode for editor files but don't persist to database
-
             let inode = self.get_or_create_inode(&full_path);
-
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -831,154 +845,95 @@ impl Filesystem for ExampleFuseFs {
             return;
         }
 
+        // Parse file name to extract title and syntax
         let file_name_path = Path::new(file_name);
-        let base = file_name_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned());
-        let ext = file_name_path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned());
-
-        let title = match base {
-            Some(t) => t,
+        let title = match file_name_path.file_stem() {
+            Some(stem) => stem.to_string_lossy().into_owned(),
             None => {
-                eprintln!("22 [ERROR] (fn create) Unable to get stem from {file_name}");
-                reply.error(ENOENT);
+                eprintln!("[ERROR] create: Unable to extract title from filename {}", file_name);
+                reply.error(libc::EINVAL);
                 return;
             }
         };
-        let syntax = match ext {
-            Some(s) => s,
+        
+        let syntax = match file_name_path.extension() {
+            Some(ext) => ext.to_string_lossy().into_owned(),
             None => {
                 eprintln!(
-                    "23 [ERROR] All files in this filesystem must have an extension (e.g., {file_name}.txt, {file_name}.md)"
+                    "[ERROR] create: All files must have an extension (e.g., {}.txt, {}.md)",
+                    file_name, file_name
                 );
                 reply.error(libc::EINVAL);
                 return;
             }
         };
 
-        // Get parent ID - None for root, Some(id) for other paths
-        // Get parent ID - None for root, Some(id) for other paths
-        let parent_id = if parent_path == "/" {
+        // Get parent folder ID - None for root, Some(id) for other paths
+        let parent_folder_id = if parent_path == "/" {
             None
         } else {
             match self.db.get_folder_id_by_path(&parent_path) {
-                Ok(maybe_id) => maybe_id,
+                Ok(Some(id)) => Some(id),
+                Ok(None) => {
+                    eprintln!("[ERROR] create: Parent directory {} not found", parent_path);
+                    reply.error(ENOENT);
+                    return;
+                }
                 Err(e) => {
-                    eprintln!(
-                        "24 [ERROR] Unable to query database for id for the directory {parent_path}"
-                    );
-                    eprintln!("{e}");
+                    eprintln!("[ERROR] create: Database error checking parent directory {}: {}", parent_path, e);
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // TODO the create method should take id as Option or not at all.
-        let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
+        // Create new note in database
+        let note_id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
         let content = "";
         let abstract_text = Some("");
-        let id = match self.db.create_note(
-            &id,
+
+        match self.db.create_note(
+            &note_id,
             &title,
             abstract_text,
             content,
             &syntax,
-            parent_id.as_deref(),
-            USER_ID,
+            parent_folder_id.as_deref(),
+            todo_user_id,
         ) {
-            // Get the returned id in case the API changes
-            Ok(id) => id,
+            Ok(_created_id) => {
+                // Note created successfully
+                let inode = self.get_or_create_inode(&full_path);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                let attr = FileAttr {
+                    ino: inode,
+                    size: 0, // Empty file initially
+                    blocks: 0,
+                    atime: UNIX_EPOCH + Duration::from_secs(now),
+                    mtime: UNIX_EPOCH + Duration::from_secs(now),
+                    ctime: UNIX_EPOCH + Duration::from_secs(now),
+                    crtime: UNIX_EPOCH + Duration::from_secs(now),
+                    kind: FileType::RegularFile,
+                    perm: 0o644,
+                    nlink: 1,
+                    uid: 501,
+                    gid: 20,
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 512,
+                };
+
+                reply.created(&TTL, &attr, 0, inode, 0);
+            }
             Err(e) => {
-                eprintln!("25 [ERROR] Unable to create note for {full_path}: {e}");
-                reply.error(ENOENT);
-                return;
+                eprintln!("[ERROR] create: Failed to create note in database for {}: {}", full_path, e);
+                reply.error(libc::EIO);
             }
-        };
-
-        if DEBUG {
-            // Get the id from the path we just created
-            let created_id = match self.db.get_note_id_by_path(&full_path) {
-                Ok(maybe_id) => match maybe_id {
-                    Some(id) => id,
-                    None => {
-                        eprintln!("26 [ERROR] (fn open) Could not find id for {full_path}");
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    eprintln!("27 [ERROR] (fn open) Could not find id for {full_path}: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-
-            // Get the path back from that id
-            let created_path = match self.db.get_note_path_by_id(&created_id) {
-                Ok(maybe_path) => match maybe_path {
-                    Some(path) => path,
-                    None => {
-                        eprintln!(
-                            "28 [ERROR] Unable to to find path for id={id} that was just created from {full_path}"
-                        );
-                        reply.error(ENOENT);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    eprintln!(
-                        "29 [ERROR] Unable to retrieve path for id={id} that was just created from {full_path}"
-                    );
-                    eprintln!("{e}");
-
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-
-            // assert equality
-            if created_path != full_path {
-                eprintln!(
-                    "29 [ERROR] Created Path differs from Retrieved path for note just created:"
-                );
-                eprintln!("30 {created_path}");
-                eprintln!("38 {full_path}");
-            }
-        }
-
-        {
-            // Create inode for the new file
-            let inode = self.get_or_create_inode(&full_path);
-
-            // Get current timestamp for attributes
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            let attr = FileAttr {
-                ino: inode,
-                size: 0, // Empty file initially
-                blocks: 0,
-                atime: UNIX_EPOCH + Duration::from_secs(now),
-                mtime: UNIX_EPOCH + Duration::from_secs(now),
-                ctime: UNIX_EPOCH + Duration::from_secs(now),
-                crtime: UNIX_EPOCH + Duration::from_secs(now),
-                kind: FileType::RegularFile,
-                perm: 0o644,
-                nlink: 1,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-
-            // Return the created file with a file handle (using inode as fh)
-            reply.created(&TTL, &attr, 0, inode, 0);
         }
     }
 
@@ -1003,6 +958,9 @@ impl Filesystem for ExampleFuseFs {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
+        eprintln!("[DEBUG] write: ino={}, offset={}, data_len={}", ino, offset, data.len());
+
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -1011,74 +969,59 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        /*
-        // Extract the filename and parent path
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
-        } else {
-            ("/", &path[..])
-        };
-        */
-
-        // Check if it's a directory
-        if self.is_dir(&path) {
-            reply.error(libc::EISDIR);
-            return;
+        // Check if it's a directory - can't write to directories
+        match self.db.get_folder_id_by_path(&path) {
+            Ok(Some(_folder_id)) => {
+                reply.error(libc::EISDIR);
+                return;
+            }
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note
+            }
+            Err(e) => {
+                eprintln!("[ERROR] write: Database error checking for folder {}: {}", path, e);
+                reply.error(ENOENT);
+                return;
+            }
         }
 
-        // Get the id of the note
-        // TODO consider a function to get the note from the path to save a second lookup
-        let id = match self.db.get_note_id_by_path(&path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("39 [ERROR] Could not find id for {path}");
-                    reply.error(ENOENT);
-                    return;
+        // Get the note ID and current content
+        let (note_id, current_content) = match self.db.get_note_id_by_path(&path) {
+            Ok(Some(note_id)) => {
+                // Get the note content
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => (note_id, note.content),
+                    Ok(None) => {
+                        eprintln!("[ERROR] write: Note with id {} not found in database", note_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] write: Database error retrieving note {}: {}", note_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
                 }
-            },
+            }
+            Ok(None) => {
+                eprintln!("[DEBUG] write: File {} not found in database", path);
+                reply.error(ENOENT);
+                return;
+            }
             Err(e) => {
-                eprintln!("40 [ERROR] Could not find id for {path}");
-                eprintln!("{e}");
-
+                eprintln!("[ERROR] write: Database error checking for note {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        let note = match self.db.get_note_by_id(&id) {
-            Ok(maybe_note) => match maybe_note {
-                Some(note) => note,
-                None => {
-                    eprintln!(
-                        "42 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
-                    );
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "43 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
-                );
-                eprintln!("{e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        let content = note.content.clone();
-
-        // TODO don't bother retrieving the content if offset=0
-        // Handle the write operation
+        // Calculate new content based on offset and data
         let new_content = if offset == 0 {
             // Overwrite from the beginning
             String::from_utf8_lossy(data).to_string()
         } else {
-            // Append or insert at offset
-            let mut content_bytes = content.into_bytes();
+            // Insert/append at offset
+            let mut content_bytes = current_content.into_bytes();
             let start_pos = offset as usize;
 
             if start_pos > content_bytes.len() {
@@ -1088,10 +1031,10 @@ impl Filesystem for ExampleFuseFs {
 
             // Replace or extend content
             if start_pos + data.len() <= content_bytes.len() {
-                // Replace existing content
+                // Replace existing content at offset
                 content_bytes[start_pos..start_pos + data.len()].copy_from_slice(data);
             } else {
-                // Extend content
+                // Extend content - truncate at offset and append new data
                 content_bytes.truncate(start_pos);
                 content_bytes.extend_from_slice(data);
             }
@@ -1099,19 +1042,35 @@ impl Filesystem for ExampleFuseFs {
             String::from_utf8_lossy(&content_bytes).to_string()
         };
 
-        // TODO consider a fine grained function to update only the content
+        // Update the note content in the database
+        // First get the note again to preserve title, syntax, etc.
+        let note = match self.db.get_note_by_id(&note_id) {
+            Ok(Some(note)) => note,
+            Ok(None) => {
+                eprintln!("[ERROR] write: Note disappeared during write operation");
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ERROR] write: Database error re-retrieving note: {}", e);
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        // Update the note with new content
         match self.db.update_note(
-            &id,
+            &note_id,
             &note.title,
             note.abstract_text.as_deref(),
             &new_content,
             &note.syntax,
         ) {
-            Ok(_n_rows_changed) => {
+            Ok(_success) => {
                 reply.written(data.len() as u32);
             }
             Err(e) => {
-                eprintln!("45 Failed to update content: {}", e);
+                eprintln!("[ERROR] write: Failed to update note content: {}", e);
                 reply.error(libc::EIO);
             }
         }
