@@ -271,7 +271,11 @@ impl Database {
         }
     }
 
-    pub fn get_folder_contents_recursive(&self, folder_id: &str, user_id: &str) -> Result<Vec<FileType>> {
+    pub fn get_folder_contents_recursive(
+        &self,
+        folder_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<FileType>> {
         let query = "
             WITH RECURSIVE folder_tree AS (
                 -- Base case: the specified folder
@@ -328,15 +332,74 @@ impl Database {
         let file_iter = stmt.query_map(params![folder_id, user_id], |row| {
             let path: String = row.get(0)?;
             let file_type: String = row.get(1)?;
-            
+
             match file_type.as_str() {
                 "directory" => Ok(FileType::Directory { path }),
                 "file" => Ok(FileType::File { path }),
-                _ => Err(rusqlite::Error::InvalidColumnType(1, "type".to_string(), rusqlite::types::Type::Text))
+                _ => Err(rusqlite::Error::InvalidColumnType(
+                    1,
+                    "type".to_string(),
+                    rusqlite::types::Type::Text,
+                )),
             }
         })?;
 
         file_iter.collect()
+    }
+
+    pub fn get_child_count(&self, parent_id: Option<&str>, user_id: Option<&str>) -> Result<(usize, usize)> {
+        let (folder_count, note_count) = match parent_id {
+            Some(pid) => {
+                // Count folders with this parent
+                let folder_count: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM folders WHERE parent_id = ?1",
+                    [pid],
+                    |row| row.get(0)
+                )?;
+
+                // Count notes with this parent (optionally filtered by user)
+                let note_count: i64 = match user_id {
+                    Some(uid) => self.connection.query_row(
+                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1 AND user_id = ?2",
+                        params![pid, uid],
+                        |row| row.get(0)
+                    )?,
+                    None => self.connection.query_row(
+                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
+                        [pid],
+                        |row| row.get(0)
+                    )?
+                };
+
+                (folder_count, note_count)
+            },
+            None => {
+                // Count root folders (no parent)
+                let folder_count: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM folders WHERE parent_id IS NULL",
+                    [],
+                    |row| row.get(0)
+                )?;
+
+                // Count root notes (optionally filtered by user)
+                let note_count: i64 = match user_id {
+                    Some(uid) => self.connection.query_row(
+                        "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL AND user_id = ?1",
+                        [uid],
+                        |row| row.get(0)
+                    )?,
+                    None => self.connection.query_row(
+                        "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL",
+                        [],
+                        |row| row.get(0)
+                    )?
+                };
+
+                (folder_count, note_count)
+            }
+        };
+
+        Ok((folder_count as usize, note_count as usize))
     }
 
     /// Maps a database row to a Folder struct, handling datetime parsing.
@@ -1228,7 +1291,7 @@ mod tests {
     fn test_get_folder_contents_recursive() {
         let db = setup_test_database();
         let user_id = "recursive_test_user";
-        
+
         // Create nested folder structure:
         // Root/
         //   ├── Documents/
@@ -1240,41 +1303,88 @@ mod tests {
         //   ├── Work/
         //   │   └── agenda.org
         //   └── readme.md
-        
-        let root_id = db.create_folder("Root", None)
+
+        let root_id = db
+            .create_folder("Root", None)
             .expect("Failed to create Root folder");
-        let docs_id = db.create_folder("Documents", Some(&root_id))
+        let docs_id = db
+            .create_folder("Documents", Some(&root_id))
             .expect("Failed to create Documents folder");
-        let projects_id = db.create_folder("Projects", Some(&docs_id))
+        let projects_id = db
+            .create_folder("Projects", Some(&docs_id))
             .expect("Failed to create Projects folder");
-        let subprojects_id = db.create_folder("SubProjects", Some(&projects_id))
+        let subprojects_id = db
+            .create_folder("SubProjects", Some(&projects_id))
             .expect("Failed to create SubProjects folder");
-        let work_id = db.create_folder("Work", Some(&root_id))
+        let work_id = db
+            .create_folder("Work", Some(&root_id))
             .expect("Failed to create Work folder");
 
         // Create notes
-        db.create_note("readme", "readme", None, "Root readme", "md", Some(&root_id), user_id)
-            .expect("Failed to create root readme");
-        db.create_note("notes", "notes", None, "Doc notes", "md", Some(&docs_id), user_id)
-            .expect("Failed to create docs notes");
-        db.create_note("project1", "project1", None, "Project content", "md", Some(&projects_id), user_id)
-            .expect("Failed to create project1");
-        db.create_note("subproject", "subproject", None, "Sub content", "txt", Some(&subprojects_id), user_id)
-            .expect("Failed to create subproject");
-        db.create_note("agenda", "agenda", None, "Work agenda", "org", Some(&work_id), user_id)
-            .expect("Failed to create work agenda");
+        db.create_note(
+            "readme",
+            "readme",
+            None,
+            "Root readme",
+            "md",
+            Some(&root_id),
+            user_id,
+        )
+        .expect("Failed to create root readme");
+        db.create_note(
+            "notes",
+            "notes",
+            None,
+            "Doc notes",
+            "md",
+            Some(&docs_id),
+            user_id,
+        )
+        .expect("Failed to create docs notes");
+        db.create_note(
+            "project1",
+            "project1",
+            None,
+            "Project content",
+            "md",
+            Some(&projects_id),
+            user_id,
+        )
+        .expect("Failed to create project1");
+        db.create_note(
+            "subproject",
+            "subproject",
+            None,
+            "Sub content",
+            "txt",
+            Some(&subprojects_id),
+            user_id,
+        )
+        .expect("Failed to create subproject");
+        db.create_note(
+            "agenda",
+            "agenda",
+            None,
+            "Work agenda",
+            "org",
+            Some(&work_id),
+            user_id,
+        )
+        .expect("Failed to create work agenda");
 
         // Test getting all contents under root
-        let contents = db.get_folder_contents_recursive(&root_id, user_id)
+        let contents = db
+            .get_folder_contents_recursive(&root_id, user_id)
             .expect("Failed to get recursive contents");
 
         // Extract paths for easier testing
-        let paths: Vec<String> = contents.iter().map(|item| {
-            match item {
+        let paths: Vec<String> = contents
+            .iter()
+            .map(|item| match item {
                 FileType::Directory { path } => path.clone(),
                 FileType::File { path } => path.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Check that we have all expected items
         assert!(paths.contains(&"Documents".to_string()));
@@ -1288,40 +1398,44 @@ mod tests {
         assert!(paths.contains(&"Work/agenda.org".to_string()));
 
         // Check types are correct
-        let directories: Vec<&String> = contents.iter().filter_map(|item| {
-            match item {
+        let directories: Vec<&String> = contents
+            .iter()
+            .filter_map(|item| match item {
                 FileType::Directory { path } => Some(path),
                 FileType::File { .. } => None,
-            }
-        }).collect();
+            })
+            .collect();
 
-        let files: Vec<&String> = contents.iter().filter_map(|item| {
-            match item {
+        let files: Vec<&String> = contents
+            .iter()
+            .filter_map(|item| match item {
                 FileType::File { path } => Some(path),
                 FileType::Directory { .. } => None,
-            }
-        }).collect();
+            })
+            .collect();
 
         assert_eq!(directories.len(), 4); // Documents, Projects, SubProjects, Work
         assert_eq!(files.len(), 5); // readme, notes, project1, subproject, agenda
 
         // Test getting contents under Documents folder only
-        let docs_contents = db.get_folder_contents_recursive(&docs_id, user_id)
+        let docs_contents = db
+            .get_folder_contents_recursive(&docs_id, user_id)
             .expect("Failed to get docs contents");
 
-        let docs_paths: Vec<String> = docs_contents.iter().map(|item| {
-            match item {
+        let docs_paths: Vec<String> = docs_contents
+            .iter()
+            .map(|item| match item {
                 FileType::Directory { path } => path.clone(),
                 FileType::File { path } => path.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         assert!(docs_paths.contains(&"Projects".to_string()));
         assert!(docs_paths.contains(&"Projects/SubProjects".to_string()));
         assert!(docs_paths.contains(&"notes.md".to_string()));
         assert!(docs_paths.contains(&"Projects/project1.md".to_string()));
         assert!(docs_paths.contains(&"Projects/SubProjects/subproject.txt".to_string()));
-        
+
         // Should not contain Work or root items
         assert!(!docs_paths.contains(&"Work".to_string()));
         assert!(!docs_paths.contains(&"readme.md".to_string()));
@@ -1332,12 +1446,14 @@ mod tests {
     fn test_get_folder_contents_recursive_empty_folder() {
         let db = setup_test_database();
         let user_id = "empty_test_user";
-        
+
         // Create empty folder
-        let empty_id = db.create_folder("Empty", None)
+        let empty_id = db
+            .create_folder("Empty", None)
             .expect("Failed to create empty folder");
 
-        let contents = db.get_folder_contents_recursive(&empty_id, user_id)
+        let contents = db
+            .get_folder_contents_recursive(&empty_id, user_id)
             .expect("Failed to get empty folder contents");
 
         assert_eq!(contents.len(), 0);
@@ -1348,21 +1464,40 @@ mod tests {
         let db = setup_test_database();
         let user1 = "user1";
         let user2 = "user2";
-        
+
         // Create folder structure
-        let shared_folder_id = db.create_folder("Shared", None)
+        let shared_folder_id = db
+            .create_folder("Shared", None)
             .expect("Failed to create shared folder");
 
         // Create notes for different users in same folder
-        db.create_note("note1", "note1", None, "User 1 content", "md", Some(&shared_folder_id), user1)
-            .expect("Failed to create user1 note");
-        db.create_note("note2", "note2", None, "User 2 content", "md", Some(&shared_folder_id), user2)
-            .expect("Failed to create user2 note");
+        db.create_note(
+            "note1",
+            "note1",
+            None,
+            "User 1 content",
+            "md",
+            Some(&shared_folder_id),
+            user1,
+        )
+        .expect("Failed to create user1 note");
+        db.create_note(
+            "note2",
+            "note2",
+            None,
+            "User 2 content",
+            "md",
+            Some(&shared_folder_id),
+            user2,
+        )
+        .expect("Failed to create user2 note");
 
         // Test that each user only sees their own notes
-        let user1_contents = db.get_folder_contents_recursive(&shared_folder_id, user1)
+        let user1_contents = db
+            .get_folder_contents_recursive(&shared_folder_id, user1)
             .expect("Failed to get user1 contents");
-        let user2_contents = db.get_folder_contents_recursive(&shared_folder_id, user2)
+        let user2_contents = db
+            .get_folder_contents_recursive(&shared_folder_id, user2)
             .expect("Failed to get user2 contents");
 
         assert_eq!(user1_contents.len(), 1);
@@ -1384,32 +1519,156 @@ mod tests {
     fn test_get_folder_contents_recursive_single_level() {
         let db = setup_test_database();
         let user_id = "single_level_user";
-        
+
         // Create folder with only direct children
-        let folder_id = db.create_folder("SingleLevel", None)
+        let folder_id = db
+            .create_folder("SingleLevel", None)
             .expect("Failed to create folder");
-        let child_folder_id = db.create_folder("ChildFolder", Some(&folder_id))
+        let child_folder_id = db
+            .create_folder("ChildFolder", Some(&folder_id))
             .expect("Failed to create child folder");
 
-        db.create_note("file1", "file1", None, "Content 1", "txt", Some(&folder_id), user_id)
-            .expect("Failed to create file1");
-        db.create_note("file2", "file2", None, "Content 2", "md", Some(&folder_id), user_id)
-            .expect("Failed to create file2");
+        db.create_note(
+            "file1",
+            "file1",
+            None,
+            "Content 1",
+            "txt",
+            Some(&folder_id),
+            user_id,
+        )
+        .expect("Failed to create file1");
+        db.create_note(
+            "file2",
+            "file2",
+            None,
+            "Content 2",
+            "md",
+            Some(&folder_id),
+            user_id,
+        )
+        .expect("Failed to create file2");
 
-        let contents = db.get_folder_contents_recursive(&folder_id, user_id)
+        let contents = db
+            .get_folder_contents_recursive(&folder_id, user_id)
             .expect("Failed to get single level contents");
 
         assert_eq!(contents.len(), 3); // 1 folder + 2 files
 
-        let paths: Vec<String> = contents.iter().map(|item| {
-            match item {
+        let paths: Vec<String> = contents
+            .iter()
+            .map(|item| match item {
                 FileType::Directory { path } => path.clone(),
                 FileType::File { path } => path.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         assert!(paths.contains(&"ChildFolder".to_string()));
         assert!(paths.contains(&"file1.txt".to_string()));
         assert!(paths.contains(&"file2.md".to_string()));
+    }
+
+    #[test]
+    fn test_get_child_count() {
+        let db = setup_test_database();
+        let user_id = "count_test_user";
+        let other_user = "other_count_user";
+        
+        // Create folder structure
+        let parent_folder_id = db.create_folder("Parent", None)
+            .expect("Failed to create parent folder");
+        let child_folder1_id = db.create_folder("Child1", Some(&parent_folder_id))
+            .expect("Failed to create child folder 1");
+        let child_folder2_id = db.create_folder("Child2", Some(&parent_folder_id))
+            .expect("Failed to create child folder 2");
+
+        // Create notes in parent folder for different users
+        db.create_note("note1", "Note 1", None, "Content 1", "md", Some(&parent_folder_id), user_id)
+            .expect("Failed to create note 1");
+        db.create_note("note2", "Note 2", None, "Content 2", "txt", Some(&parent_folder_id), user_id)
+            .expect("Failed to create note 2");
+        db.create_note("note3", "Note 3", None, "Content 3", "md", Some(&parent_folder_id), other_user)
+            .expect("Failed to create note 3 for other user");
+
+        // Create notes at root level
+        db.create_note("root1", "Root 1", None, "Root content", "md", None, user_id)
+            .expect("Failed to create root note 1");
+        db.create_note("root2", "Root 2", None, "Root content", "org", None, other_user)
+            .expect("Failed to create root note 2 for other user");
+
+        // Test counting children of parent folder with specific user
+        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), Some(user_id))
+            .expect("Failed to get child count for specific user");
+        assert_eq!(folder_count, 2); // Child1, Child2
+        assert_eq!(note_count, 2);   // note1, note2 (only for user_id)
+
+        // Test counting children of parent folder with other user
+        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), Some(other_user))
+            .expect("Failed to get child count for other user");
+        assert_eq!(folder_count, 2); // Child1, Child2 (folders are shared)
+        assert_eq!(note_count, 1);   // note3 (only for other_user)
+
+        // Test counting children of parent folder without user filter
+        let (folder_count, note_count) = db.get_child_count(Some(&parent_folder_id), None)
+            .expect("Failed to get child count without user filter");
+        assert_eq!(folder_count, 2); // Child1, Child2
+        assert_eq!(note_count, 3);   // note1, note2, note3 (all notes)
+
+        // Test counting children of empty folder
+        let empty_folder_id = db.create_folder("Empty", None)
+            .expect("Failed to create empty folder");
+        let (folder_count, note_count) = db.get_child_count(Some(&empty_folder_id), Some(user_id))
+            .expect("Failed to get empty folder child count");
+        assert_eq!(folder_count, 0);
+        assert_eq!(note_count, 0);
+
+        // Test counting root level items with specific user
+        let (folder_count, note_count) = db.get_child_count(None, Some(user_id))
+            .expect("Failed to get root count for specific user");
+        assert_eq!(folder_count, 2); // Parent, Empty (folders are not user-specific)
+        assert_eq!(note_count, 1);   // root1 (only for user_id)
+
+        // Test counting root level items without user filter
+        let (folder_count, note_count) = db.get_child_count(None, None)
+            .expect("Failed to get root count without user filter");
+        assert_eq!(folder_count, 2); // Parent, Empty
+        assert_eq!(note_count, 2);   // root1, root2 (all root notes)
+    }
+
+    #[test]
+    fn test_get_child_count_edge_cases() {
+        let db = setup_test_database();
+        let user_id = "edge_test_user";
+
+        // Test with non-existent folder ID
+        let (folder_count, note_count) = db.get_child_count(Some("non_existent_id"), Some(user_id))
+            .expect("Failed to get count for non-existent folder");
+        assert_eq!(folder_count, 0);
+        assert_eq!(note_count, 0);
+
+        // Test with non-existent user ID
+        let folder_id = db.create_folder("Test", None)
+            .expect("Failed to create test folder");
+        db.create_note("test_note", "Test", None, "Content", "md", Some(&folder_id), user_id)
+            .expect("Failed to create test note");
+
+        let (folder_count, note_count) = db.get_child_count(Some(&folder_id), Some("non_existent_user"))
+            .expect("Failed to get count for non-existent user");
+        assert_eq!(folder_count, 1); // Folders are not user-specific, so we created one above
+        assert_eq!(note_count, 0);   // No notes for this user
+
+        // Test deeply nested structure
+        let mut current_parent = Some(folder_id.clone());
+        for i in 1..=3 {
+            let child_id = db.create_folder(&format!("Level{}", i), current_parent.as_deref())
+                .expect("Failed to create nested folder");
+            current_parent = Some(child_id);
+        }
+
+        // The original folder should have 1 child (Level1)
+        let (folder_count, note_count) = db.get_child_count(Some(&folder_id), Some(user_id))
+            .expect("Failed to get count for nested structure");
+        assert_eq!(folder_count, 1); // Level1
+        assert_eq!(note_count, 1);   // test_note
     }
 }

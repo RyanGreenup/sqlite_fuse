@@ -1,6 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet}, error::Error, path::PathBuf, time::{Duration, SystemTime, UNIX_EPOCH}
+    collections::{HashMap, HashSet},
+    error::Error,
+    path::Path,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+const DEBUG: bool = true;
 
 use chrono::Utc;
 use chrono_tz::{Australia::Sydney, Tz};
@@ -9,6 +14,7 @@ const TIMEZONE: Tz = Sydney; // Australia/Sydney timezone
 use fuser::Filesystem;
 
 use libc::ENOENT;
+use rusqlite::Connection;
 use std::ffi::OsStr;
 
 use fuser::{FileAttr, FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
@@ -25,58 +31,13 @@ pub struct ExampleFuseFs {
 }
 
 impl ExampleFuseFs {
-    fn get_files(parent_id: &str) -> Vec<String> {
-        return (1..5)
-            .into_iter()
-            .map(|v| format!("{parent_id}-{v}"))
-            .collect();
-    }
-
     fn is_dir(&self, path: &str) -> bool {
         if path == "/" {
-            return true;  // Root is always a directory
+            return true; // Root is always a directory
         }
-
-        let id = self.db.get_id_from_path(path);
-        if let Some(id) = id {
-            return self.db.get_child_count(&id) > 0;
-        } else {
-            return false;
-        }
-    }
-
-    fn get_content(&self, path: &str) -> Option<String> {
-        if path == "/" {
-            return None;  // Root directory has no content
-        }
-
-        let id = self.db.get_id_from_path(path);
-        if let Some(id) = id {
-            self.db.get_content(&id)
-        } else {
-            // Only warn for paths that aren't system files
-            if !Self::is_system_file(path) {
-                eprintln!("[WARNING] Unable to get id for {path}");
-            }
-            return None;
-        }
-    }
-
-    fn content_size(&self, path: &str) -> usize {
-        match self.get_content(path) {
-            Some(text) => text.len(),
-            None => {
-                if self.is_dir(path) {
-                    // Directories have no content, which is expected
-                    0
-                } else if !Self::is_system_file(path) {
-                    eprintln!("[WARNING] No content found for file {path}");
-                    0
-                } else {
-                    // System files that don't exist - no warning needed
-                    0
-                }
-            }
+        match self.db.get_folder_id_by_path(path) {
+            Ok(_id) => true,
+            Err(_e) => false,
         }
     }
 
@@ -89,55 +50,6 @@ impl ExampleFuseFs {
             ("/", &path[..])
         };
         return (parent_path.to_string(), filename.to_string());
-    }
-
-    // Unused
-    /*
-    fn get_dirs(parent_id: &str) -> Vec<String> {
-        return vec!["A", "B", "C"]
-            .into_iter()
-            .map(|v| format!("{parent_id}-{v}"))
-            .collect();
-    }
-
-    fn get_root_dirs() -> Vec<String> {
-        return vec!["A".into(), "B".into(), "C".into()];
-    }
-
-    fn get_root_files() -> Vec<String> {
-        return vec!["1".into(), "2".into(), "3".into()];
-    }
-    */
-
-    fn get_children(&self, path: &str) -> Vec<(bool, String)> {
-        let mut results: Vec<(bool, String)> = vec![];
-
-        if path == "/" {
-            // For root path, get items with no parent
-            for item in self.db.get_all().values() {
-                if item.parent_id.is_none() {
-                    let count = self.db.get_child_count(&item.id);
-                    let is_dir = count > 0;
-                    results.push((is_dir, item.title.clone()));
-                }
-            }
-        } else {
-            match self.db.get_id_from_path(path) {
-                Some(id) => {
-                    for item in self.db.get_children(&id) {
-                        let count = self.db.get_child_count(&item.id);
-                        let is_dir = count > 0;
-                        results.push((is_dir, item.title.clone()));
-                    }
-                }
-                None => {
-                    eprintln!("[WARNING] Could not find id for path {path}");
-                    return vec![];
-                }
-            }
-        }
-
-        return results;
     }
 
     fn get_path_from_inode(&self, inode: u64) -> Option<&String> {
@@ -154,35 +66,6 @@ impl ExampleFuseFs {
         self.inode_map.insert(path.to_string(), inode);
         self.reverse_inode_map.insert(inode, path.to_string());
         inode
-    }
-
-    pub fn get_parent_id_from_path(&self, path: &str) -> Option<String> {
-        if let Some(id) = self.db.get_id_from_path(path) {
-            if let Some(item) = self.db.get(&id) {
-                return item.parent_id.clone();
-            }
-        } else {
-            eprintln!("Unable to get ID from {path}");
-        }
-        None
-    }
-
-    pub fn get_parent_id_from_parent_path(
-        &self,
-        parent_path: &str,
-    ) -> Result<Option<String>, Box<dyn Error>> {
-        let parent_note_id = if parent_path == "/" {
-            Ok(None)
-        } else {
-            match self.db.get_id_from_path(&parent_path) {
-                Some(id) => Ok(Some(id)),
-                None => {
-                    // This is an error because the id couldn't be found
-                    Err("Unable to get ID from parent path")?
-                }
-            }
-        };
-        return parent_note_id;
     }
 
     fn is_system_file(path: &str) -> bool {
@@ -210,6 +93,10 @@ impl ExampleFuseFs {
     }
 
     fn is_editor_temp_file(filename: &str) -> bool {
+        // ignore all dotfiles
+        if filename.starts_with('.') {
+            return true;
+        }
         // Vim/Neovim swap files
         if filename.starts_with('.') && filename.ends_with(".swp") {
             return true;
@@ -249,18 +136,6 @@ impl ExampleFuseFs {
 
         false
     }
-    fn get_parent_id(&self, parent_path: &str) -> Option<String> {
-        let parent_note_id = if parent_path == "/" {
-            None
-        } else {
-            match self.get_parent_id_from_path(parent_path) {
-                Some(id) => Some(id),
-                None => return None,
-            }
-        };
-
-        return parent_note_id;
-    }
 
     fn current_timestamp() -> String {
         let utc_now = Utc::now();
@@ -268,7 +143,7 @@ impl ExampleFuseFs {
         sydney_time.format("%Y-%m-%d %H:%M:%S").to_string()
     }
 
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new(connection: Connection, timezone: Option<Tz>) -> Result<Self, Box<dyn Error>> {
         /*
         // Create performance indexes for unified notes table
         db.execute(
@@ -288,7 +163,7 @@ impl ExampleFuseFs {
             [],
         )?;
         */
-        let db = Database::new();
+        let db = Database::new(connection, timezone);
 
         let mut fs = ExampleFuseFs {
             db,
@@ -303,7 +178,6 @@ impl ExampleFuseFs {
 
         Ok(fs)
     }
-
 }
 
 impl Filesystem for ExampleFuseFs {
@@ -335,9 +209,21 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{name_str}")
         };
 
-        // Check if this path exists in our database
-        let path_exists = self.db.get_id_from_path(&full_path).is_some();
-        eprintln!("[DEBUG] lookup: full_path={}, exists_in_db={}", full_path, path_exists);
+        let _id = match self.db.get_note_id_by_path(&full_path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {full_path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("[ERROR] (fn open) Could not find id for {full_path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         // Handle editor temporary files with synthetic attributes
         if Self::is_editor_temp_file(name_str) {
@@ -366,64 +252,6 @@ impl Filesystem for ExampleFuseFs {
                 blksize: 512,
             };
 
-            reply.entry(&TTL, &attr, 0);
-            return;
-        }
-
-        // Check if the file/directory exists in the database
-        if !path_exists {
-            eprintln!("[DEBUG] lookup: path {} not found in database, returning ENOENT", full_path);
-            reply.error(ENOENT);
-            return;
-        }
-
-        // Is it a directory
-        let is_dir = self.is_dir(&full_path);
-
-        if is_dir {
-            // This note has children, so it's a directory
-            let inode = self.get_or_create_inode(&full_path);
-            let attr = FileAttr {
-                ino: inode,
-                size: 0,
-                blocks: 0,
-                atime: UNIX_EPOCH,  // TODO: Parse created_at
-                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                crtime: UNIX_EPOCH, // TODO: Parse created_at
-                kind: FileType::Directory,
-                perm: 0o755,
-                nlink: 2,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-            reply.entry(&TTL, &attr, 0);
-            return;
-        } else {
-            let inode = self.get_or_create_inode(&full_path);
-            let content_size = self.content_size(&full_path) as u64;
-
-            // TODO: Parse timestamp strings properly
-            let attr = FileAttr {
-                ino: inode,
-                size: content_size,
-                blocks: content_size.div_ceil(512) as u64,
-                atime: UNIX_EPOCH,  // TODO: Parse created_at
-                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                crtime: UNIX_EPOCH, // TODO: Parse created_at
-                kind: FileType::RegularFile,
-                perm: 0o644,
-                nlink: 1,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
             reply.entry(&TTL, &attr, 0);
             return;
         }
@@ -463,17 +291,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Extract the filename and parent path
-        let (parent_path, _filename) = Self::split_parent_path_and_filename(&path);
-
-        // Ensure we can Get parent note ID (None for root level)
-        let _parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("{e}");
-                reply.error(ENOENT);
-                return;
-            }
-        };
+        let (_parent_path, _filename) = Self::split_parent_path_and_filename(&path);
 
         // is directory
         if self.is_dir(&path) {
@@ -498,10 +316,51 @@ impl Filesystem for ExampleFuseFs {
             reply.attr(&TTL, &attr);
             return;
         } else {
+            let id = match self.db.get_note_id_by_path(&path) {
+                Ok(maybe_id) => match maybe_id {
+                    Some(id) => id,
+                    None => {
+                        eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+
+            let note = match self.db.get_note_by_id(&id) {
+                Ok(maybe_note) => match maybe_note {
+                    Some(note) => note,
+                    None => {
+                        eprintln!(
+                            "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                        );
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                    );
+                    eprintln!("{e}");
+
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+
+            let size = note.content.len() as u64;
+            let blocks = note.content.len().div_ceil(512) as u64;
+
             let attr = FileAttr {
                 ino,
-                size: self.content_size(&path) as u64,
-                blocks: self.content_size(&path).div_ceil(512) as u64,
+                size,
+                blocks,
                 atime: UNIX_EPOCH,  // TODO: Parse created_at
                 mtime: UNIX_EPOCH,  // TODO: Parse updated_at
                 ctime: UNIX_EPOCH,  // TODO: Parse updated_at
@@ -545,24 +404,58 @@ impl Filesystem for ExampleFuseFs {
             return;
         }
 
+        // Get the id
+        let id = match self.db.get_note_id_by_path(&path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
         // get the content
-        let content = self.get_content(&path);
+        let note = match self.db.get_note_by_id(&id) {
+            Ok(maybe_note) => match maybe_note {
+                Some(note) => note,
+                None => {
+                    eprintln!(
+                        "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // get the content
+        let content = note.content;
 
         // Extract the filename and parent path
 
-        if let Some(content) = content {
-            let content_bytes = content.as_bytes(); //  note_result.1.as_bytes();
-            let start = offset as usize;
-            if start < content_bytes.len() {
-                reply.data(&content_bytes[start..]);
-            } else {
-                reply.data(&[]);
-            }
-            return;
+        let content_bytes = content.as_bytes(); //  note_result.1.as_bytes();
+        let start = offset as usize;
+        if start < content_bytes.len() {
+            reply.data(&content_bytes[start..]);
         } else {
-            // A file where we cant find content is an error
-            reply.error(ENOENT);
+            reply.data(&[]);
         }
+        return;
     }
 
     fn readdir(
@@ -573,7 +466,6 @@ impl Filesystem for ExampleFuseFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -582,9 +474,26 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Get the folder id
+        let id = match self.db.get_folder_id_by_path(&path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("Unable to get folder for {path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Unable to get folder for {path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
         // Determine parent inode
         let parent_ino = if path == "/" {
-            1  // Root's parent is itself
+            1 // Root's parent is itself
         } else {
             // Find parent path and get its inode
             if let Some(pos) = path.rfind('/') {
@@ -603,19 +512,32 @@ impl Filesystem for ExampleFuseFs {
 
         // Get additional Entries from the database
         let mut seen_titles: HashSet<String> = std::collections::HashSet::new();
-        for (is_dir, title) in self.get_children(&path) {
-            if !seen_titles.contains(&title) {
-                seen_titles.insert(title.clone());
+        // TODO this should be a command line argument
+        // TODO the underlying database should filter this for every query
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
+        let db_titles = match self.db.get_folder_contents_recursive(&id, todo_user_id) {
+            Ok(titles) => titles,
+            Err(e) => {
+                eprintln!("[ERROR] Unable to get titles for id = {id} at {path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
-                // Create full path for the child
-                let child_path = if path == "/" {
-                    format!("/{}", title)
-                } else {
-                    format!("{}/{}", path, title)
-                };
+        for file in db_titles {
+            let (is_dir, path) = match file {
+                crate::database::FileType::File { path } => (false, path),
+                crate::database::FileType::Directory { path } => (true, path),
+            };
+
+            // Path is like /foo/bar/baz, we need just baz
+            let basename = path.split('/').last().unwrap_or(&path).to_string();
+
+            if !seen_titles.contains(&basename) {
+                seen_titles.insert(path.clone());
 
                 // Get or create inode for the child
-                let child_ino = self.get_or_create_inode(&child_path);
+                let child_ino = self.get_or_create_inode(&path);
 
                 let file_type = if is_dir {
                     FileType::Directory
@@ -623,7 +545,7 @@ impl Filesystem for ExampleFuseFs {
                     FileType::RegularFile
                 };
 
-                entries.push((child_ino, file_type, title.to_string()));
+                entries.push((child_ino, file_type, path.to_string()));
             }
         }
 
@@ -636,16 +558,10 @@ impl Filesystem for ExampleFuseFs {
         reply.ok();
     }
 
-    /// Handle directory creation operations (unified schema)
-    ///
-    /// In the unified schema, creating a directory means creating a note that will act as a folder.
-    /// The note is created with empty content initially, and if children are added later,
-    /// its content becomes accessible via index.{ext}.
+    /// Handle directory creation operations
     ///
     /// Key behaviors:
     /// - Creates a note in the database that represents a directory
-    /// - Uses default syntax "markdown" for new directories
-    /// - TODO: Need user_id - for now using placeholder
     fn mkdir(
         &mut self,
         _req: &Request,
@@ -671,33 +587,45 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
         };
+        // Construct the candidate full path (if successful)
+
+        // Create the full path for the new directory
+        let full_path = if parent_path == "/" {
+            format!("/{folder_name}")
+        } else {
+            format!("{parent_path}/{folder_name}")
+        };
 
         // Get parent ID - None for root, Some(id) for other paths
         let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_id_from_path(&parent_path) {
-                Some(id) => Some(id),
-                None => {
-                    eprintln!("Unable to find id for the directory {parent_path}");
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] Unable to query database for id for the directory {parent_path}"
+                    );
+                    eprintln!("{e}");
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        // Create the note
-        self.db.create(None, folder_name, parent_id.as_deref());
+        // TODO the create method should take id as Option or not at all.
+        let _id = match self.db.create_folder(folder_name, parent_id.as_deref()) {
+            // Get the returned id in case the API changes
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("[ERROR] Unable to create folder for {full_path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         // Use the note_id (either existing or newly created) for further operations
         {
-            // Create the full path for the new directory
-            let full_path = if parent_path == "/" {
-                format!("/{folder_name}")
-            } else {
-                format!("{parent_path}/{folder_name}")
-            };
-
             // Create inode for the new directory
             let inode = self.get_or_create_inode(&full_path);
 
@@ -729,11 +657,9 @@ impl Filesystem for ExampleFuseFs {
         }
     }
 
-    /// Handle file creation operations (unified schema)
+    /// Handle file creation operations
     ///
     /// Creates a new note in the database. The file extension determines the syntax type.
-    /// In the unified schema, this creates a note that will be presented as a file until
-    /// it gets children (at which point it becomes a directory with index.{ext} for content).
     fn create(
         &mut self,
         _req: &Request,
@@ -752,8 +678,10 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        eprintln!("[DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}",
-                 parent, file_name, mode, flags);
+        eprintln!(
+            "[DEBUG] create called: parent={}, name={}, mode={:#o}, flags={:#x}",
+            parent, file_name, mode, flags
+        );
 
         // Get parent path
         let parent_path = match self.get_path_from_inode(parent) {
@@ -764,15 +692,17 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Construct the candidate full_path
+        let full_path = if parent_path == "/" {
+            format!("/{file_name}")
+        } else {
+            format!("{parent_path}/{file_name}")
+        };
+
         // Handle editor temporary files by creating them as regular empty files
         // but don't store them in the database
         if Self::is_editor_temp_file(file_name) {
             // Create a temporary inode for editor files but don't persist to database
-            let full_path = if parent_path == "/" {
-                format!("/{file_name}")
-            } else {
-                format!("{parent_path}/{file_name}")
-            };
 
             let inode = self.get_or_create_inode(&full_path);
 
@@ -803,68 +733,124 @@ impl Filesystem for ExampleFuseFs {
             return;
         }
 
-        /*
-        // Consider splitting the extension to store in a db field
-        let path = Path::new(file_name);
-        let base = path.file_stem().map(|s| s.to_string_lossy().into_owned());
-        let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
-        */
+        let file_name_path = Path::new(file_name);
+        let base = file_name_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        let ext = file_name_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
 
+        let title = match base {
+            Some(t) => t,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let syntax = match ext {
+            Some(s) => s,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // Get parent ID - None for root, Some(id) for other paths
         // Get parent ID - None for root, Some(id) for other paths
         let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_id_from_path(&parent_path) {
-                Some(id) => Some(id),
-                None => {
-                    eprintln!("Cannot get id for parent path {parent_path}");
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] Unable to query database for id for the directory {parent_path}"
+                    );
+                    eprintln!("{e}");
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
 
-        self.db.create(None, file_name, parent_id.as_deref());
-
-        // Debug: verify the file was created
-        let created_path = if parent_path == "/" {
-            format!("/{file_name}")
-        } else {
-            format!("{parent_path}/{file_name}")
-        };
-
-        if self.db.get_id_from_path(&created_path).is_none() {
-            eprintln!("[DEBUG] File {created_path} was not found after creation!");
-            eprintln!("[DEBUG] Parent path: {parent_path}, parent_id: {:?}", parent_id);
-
-            // List all items in database for debugging
-            eprintln!("[DEBUG] All items in database:");
-            for (id, item) in self.db.get_all() {
-                eprintln!("  ID: {}, Title: {}, Parent: {:?}", id, item.title, item.parent_id);
-            }
-        }
-
-        /*
-        If this panics we could instead:
-        // Get or create the note for this file
-        let _note_id = match self.get_or_create_note(&parent_path, title, "", extension) {
+        // TODO the create method should take id as Option or not at all.
+        let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
+        let content = "";
+        let abstract_text = Some("");
+        let id = match self.db.create_note(
+            &id,
+            &title,
+            abstract_text,
+            content,
+            &syntax,
+            parent_id.as_deref(),
+            todo_user_id,
+        ) {
+            // Get the returned id in case the API changes
             Ok(id) => id,
-            Err(_) => {
-                reply.error(libc::EIO);
+            Err(e) => {
+                eprintln!("[ERROR] Unable to create note for {full_path}: {e}");
+                reply.error(ENOENT);
                 return;
             }
         };
-        */
 
-        // Use the note_id (either existing or newly created) for further operations
-        {
-            // Create the full path for the new file
-            let full_path = if parent_path == "/" {
-                format!("/{file_name}")
-            } else {
-                format!("{parent_path}/{file_name}")
+        if DEBUG {
+            // Get the id from the path we just created
+            let created_id = match self.db.get_note_id_by_path(&full_path) {
+                Ok(maybe_id) => match maybe_id {
+                    Some(id) => id,
+                    None => {
+                        eprintln!("[ERROR] (fn open) Could not find id for {full_path}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {full_path}: {e}");
+                    reply.error(ENOENT);
+                    return;
+                }
             };
 
+            // Get the path back from that id
+            let created_path = match self.db.get_note_path_by_id(&created_id) {
+                Ok(maybe_path) => match maybe_path {
+                    Some(path) => path,
+                    None => {
+                        eprintln!(
+                            "[ERROR] Unable to to find path for id={id} that was just created from {full_path}"
+                        );
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] Unable to retrieve path for id={id} that was just created from {full_path}"
+                    );
+                    eprintln!("{e}");
+
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+
+            // assert equality
+            if created_path != full_path {
+                eprintln!(
+                    "[ERROR] Created Path differs from Retrieved path for note just created:"
+                );
+                eprintln!("{created_path}");
+                eprintln!("{full_path}");
+            }
+        }
+
+        {
             // Create inode for the new file
             let inode = self.get_or_create_inode(&full_path);
 
@@ -897,17 +883,15 @@ impl Filesystem for ExampleFuseFs {
         }
     }
 
-    /// Handle file write operations (unified schema)
+    /// Handle file write operations
     ///
-    /// This method handles writing to both regular files and index files in the unified schema.
+    /// This method handles writing to regular files
     /// The content is immediately written to the database's 'content' field.
     ///
     /// Key behaviors:
     /// - offset 0: Completely overwrites existing content
     /// - offset > 0: Inserts/appends data at the specified position
     /// - Updates timestamps (updated_at) in database
-    /// - Supports writing to index files (`index.{ext}`) which write to the parent note's content
-    /// - Supports writing to regular files (`{title}.{ext}`) which are leaf notes
     fn write(
         &mut self,
         _req: &Request,
@@ -920,7 +904,6 @@ impl Filesystem for ExampleFuseFs {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
-        eprintln!("[DEBUG] write called: ino={}, offset={}, data_len={}", ino, offset, data.len());
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -929,6 +912,7 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        /*
         // Extract the filename and parent path
         let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
             let parent = &path[..pos];
@@ -937,41 +921,58 @@ impl Filesystem for ExampleFuseFs {
         } else {
             ("/", &path[..])
         };
+        */
 
-        // Get the parent note ID (unified schema)
-        let parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
-            Ok(id) => id,
+        // Check if it's a directory
+        if self.is_dir(&path) {
+            reply.error(libc::EISDIR);
+            return;
+        }
+
+        // Get the id of the note
+        // TODO consider a function to get the note from the path to save a second lookup
+        let id = match self.db.get_note_id_by_path(&path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] Could not find id for {path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
             Err(e) => {
+                eprintln!("[ERROR] Could not find id for {path}");
+                eprintln!("{e}");
+
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        let note = match self.db.get_note_by_id(&id) {
+            Ok(maybe_note) => match maybe_note {
+                Some(note) => note,
+                None => {
+                    eprintln!(
+                        "[ERROR] (fn write) Unable to find note in database with id={id} {path}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn write) Unable to find search for in database with id={id} {path}"
+                );
                 eprintln!("{e}");
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        // Get the id of this note
-        let id = match self.db.get_id_from_path(&path) {
-            Some(id) => id,
-            None => {
-                eprintln!("[ERROR] Unable to get id for path: {}", path);
-                eprintln!("[DEBUG] Looking for path components:");
-                for component in path.split('/').filter(|s| !s.is_empty()) {
-                    eprintln!("  - {}", component);
-                }
-                reply.error(ENOENT);
-                return;
-            }
-        };
+        let content = note.content.clone();
 
-        // Confirm this is not a directory
-        if self.is_dir(&path) {
-            reply.error(libc::EISDIR);
-            return;
-        }
-
-        // Get the content
-        // TODO consider that every look up is expensive
-        let content = self.get_content(&path).unwrap_or_default();
-
+        // TODO don't bother retrieving the content if offset=0
         // Handle the write operation
         let new_content = if offset == 0 {
             // Overwrite from the beginning
@@ -999,9 +1000,15 @@ impl Filesystem for ExampleFuseFs {
             String::from_utf8_lossy(&content_bytes).to_string()
         };
 
-        // Update the note's content
-        match self.db.update_content(&id, &new_content) {
-            Ok(_) => {
+        // TODO consider a fine grained function to update only the content
+        match self.db.update_note(
+            &id,
+            &note.title,
+            note.abstract_text.as_deref(),
+            &new_content,
+            &note.syntax,
+        ) {
+            Ok(_n_rows_changed) => {
                 reply.written(data.len() as u32);
             }
             Err(e) => {
@@ -1035,23 +1042,45 @@ impl Filesystem for ExampleFuseFs {
         // Extract the filename and parent path for database verification
         let (parent_path, filename) = Self::split_parent_path_and_filename(&path);
 
-        // Get the parent note ID (unified schema)
-        let parent_note_id = match self.get_parent_id_from_parent_path(&parent_path) {
-            Ok(id) => id,
+        // Confirm the parent_id exists
+        let _parent_id = if parent_path == "/" {
+            None
+        } else {
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
+
+        // Get the full path
+        let full_path = if parent_path == "/" {
+            format!("/{filename}")
+        } else {
+            format!("{parent_path}/{filename}")
+        };
+
+        // Confirm the note exists
+        let _id = match self.db.get_note_id_by_path(&full_path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
         };
-
-        if !self.db.get_id_from_path(&path).is_some() {
-            if !Self::is_system_file(&path) {
-                eprintln!("[ERROR] Could not find {path} in the database, which is unexpected");
-            }
-            reply.error(ENOENT);
-            return;
-        }
 
         // A directory should be accessed as a directory, not a file
         if self.is_dir(&path) {
@@ -1101,7 +1130,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Extract the filename and parent path for database operations
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
+        let (_parent_path, filename) = if let Some(pos) = path.rfind('/') {
             let parent = &path[..pos];
             let name = &path[pos + 1..];
             (if parent.is_empty() { "/" } else { parent }, name)
@@ -1109,37 +1138,88 @@ impl Filesystem for ExampleFuseFs {
             ("/", &path[..])
         };
 
+        /*
         // Handle regular files - strip extension and find note by title
-        let parent_note_id = if parent_path == "/" {
+        let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_id_from_path(parent_path) {
-                Some(id) => Some(id),
-                None => {
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn setattr) Unable to query database for id for the directory {parent_path}: {e}"
+                    );
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
+        */
 
-        // Extract the title from the filename (i.e. handle extensions etc.)
-        let title = filename;
-        let id = self
-            .db
-            .get_id_from_path(&path)
-            .expect("[ERROR] could not get id for {path}");
+        let file_name_path = Path::new(filename);
+        let base = file_name_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        let ext = file_name_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
+        let title = match base {
+            Some(t) => t,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {filename}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let syntax = match ext {
+            Some(s) => s,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {filename}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
-        // Handle size changes (file truncation/extension)
-        if let Some(new_size) = size {
-            let current_content = match self.db.get_content(&id) {
-                Some(content) => content,
+        let id = match self.db.get_note_id_by_path(&path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
                 None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
                     reply.error(ENOENT);
                     return;
                 }
-            };
+            },
+            Err(e) => {
+                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
-            let mut content_bytes = current_content.into_bytes();
+        let note = match self.db.get_note_by_id(&id) {
+            Ok(maybe_note) => match maybe_note {
+                Some(note) => note,
+                None => {
+                    eprintln!(
+                        "[ERROR] (fn setattr) Unable to find note in database with id={id} {path}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn setattr) Unable to find search for in database with id={id} {path}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // Handle size changes (file truncation/extension)
+        if let Some(new_size) = size {
+            let mut content_bytes = note.content.clone().into_bytes();
             let target_size = new_size as usize;
 
             // Adjust content size based on target
@@ -1150,16 +1230,26 @@ impl Filesystem for ExampleFuseFs {
             }
 
             // Write the new_content too
-            // let new_content = String::from_utf8_lossy(&content_bytes).to_string();
+            // TODO should we bother with this?
+            let new_content = String::from_utf8_lossy(&content_bytes).to_string();
             //
-            self.db.update(&id, Some(title), parent_note_id.as_deref());
+            self.db.update_note(
+                &id,
+                &title,
+                note.abstract_text.as_deref(),
+                &new_content,
+                &syntax,
+            );
         }
+
+        let size = note.content.len() as u64;
+        let blocks = note.content.len().div_ceil(512) as u64;
 
         // Return updated file attributes
         let attr = FileAttr {
             ino,
-            size: self.content_size(&id) as u64,
-            blocks: self.content_size(&id).div_ceil(512) as u64,
+            size,
+            blocks,
             atime: UNIX_EPOCH,  // TODO: Parse created_at string from db
             mtime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
             ctime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
@@ -1232,17 +1322,9 @@ impl Filesystem for ExampleFuseFs {
         }
     }
 
-    /// Handle file and directory renaming operations (unified schema)
-    ///
-    /// In the unified schema, renaming works on notes regardless of whether they're
-    /// currently presented as files or directories. The operation handles:
-    /// - Title changes (with proper extension handling)
-    /// - Moving between directories (parent_id changes)
-    /// - Updating timestamps
+    /// Handle file and directory renaming operations
     ///
     /// Key behaviors:
-    /// - Single table operation (notes table only)
-    /// - Handles both file and directory renaming automatically
     /// - Strips extensions when storing titles in database
     /// - Updates inode mappings for renamed items and their descendants
     /// - Proper NULL handling for parent_id
@@ -1289,25 +1371,15 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get parent note IDs from database (None for root level)
-        let parent_note_id = if parent_path == "/" {
+        let new_parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_id_from_path(&parent_path) {
-                Some(id) => Some(id),
-                None => {
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
-
-        let new_parent_note_id = if new_parent_path == "/" {
-            None
-        } else {
-            match self.db.get_id_from_path(&new_parent_path) {
-                Some(id) => Some(id),
-                None => {
+            match self.db.get_folder_id_by_path(&new_parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                    );
                     reply.error(ENOENT);
                     return;
                 }
@@ -1322,24 +1394,107 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{old_name}")
         };
 
-        // Get the ID for the item being renamed
-        let id = match self.db.get_id_from_path(&old_path) {
-            Some(id) => id,
-            None => {
-                eprintln!("[WARNING] Cannot get id for {}", old_path);
+        let new_path = if new_parent_path == "/" {
+            format!("/{new_name}")
+        } else {
+            format!("{new_parent_path}/{new_name}")
+        };
+
+        // Get the id for the item being renamed
+        let id = match self.db.get_note_id_by_path(&old_path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {old_path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("[ERROR] (fn open) Could not find id for {old_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        let now = Self::current_timestamp();
+        // Get the new title and extension
+        let file_name_path = Path::new(new_name);
+        let base = file_name_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        let ext = file_name_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
 
-        // handle extensions
-        let new_title = new_name;
+        let title = match base {
+            Some(t) => t,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {new_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let syntax = match ext {
+            Some(s) => s,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {new_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
-        // Update the note with new title, parent, and extension
-        self.db
-            .update(&id, Some(new_title), new_parent_note_id.as_deref());
+        // Get the current note content
+
+        let note = match self.db.get_note_by_id(&id) {
+            Ok(maybe_note) => match maybe_note {
+                Some(note) => note,
+                None => {
+                    eprintln!(
+                        "[ERROR] (fn write) Unable to find note in database with id={id} {new_path}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn write) Unable to find search for in database with id={id} {old_path}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // Update the note with new title and extension
+        let _succeeded = match self.db.update_note(
+            &id,
+            &title,
+            note.abstract_text.as_deref(),
+            &note.content,
+            &syntax,
+        ) {
+            Ok(is_success) => is_success,
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn rename) Unable to update note with new title and extension id={id} oldpath={old_path} newpath={new_path}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let _succeeded = match self.db.update_note_parent(&id, new_parent_id.as_deref()) {
+            Ok(is_success) => is_success,
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn rename) Unable to update note parent id={id} oldpath={old_path} newpath={new_path}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         // Successfully renamed the note
         // Update inode mappings for the renamed item and all its descendants
@@ -1355,6 +1510,7 @@ impl Filesystem for ExampleFuseFs {
             format!("{new_parent_path}/{new_name}")
         };
 
+        // TODO should we consider getting this straight from the database?
         // Collect paths to update (including descendants)
         let mut paths_to_update = Vec::new();
         for (path, inode) in &self.inode_map {
@@ -1421,47 +1577,53 @@ impl Filesystem for ExampleFuseFs {
         let path = "{parent_path}/{filename}";
 
         // Get the id
-        let id = self
-            .db
-            .get_id_from_path(path)
-            .expect("[WARNING] Unable to find id for {path}");
+
+        let id = match self.db.get_note_id_by_path(&path) {
+            Ok(maybe_id) => match maybe_id {
+                Some(id) => id,
+                None => {
+                    eprintln!("[ERROR] (fn open) Could not find id for {path}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("[ERROR] (fn open) Could not find id for {path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
         if self.is_dir(&path) {
             // This note has children, so it's a directory - cannot delete as a file
             reply.error(libc::EISDIR);
             return;
         }
-        self.db.delete(&id);
 
-        // If not successful
-        // reply.error(libc::EIO);
-        // return
-        // If that was successful
-        let file_path = if parent_path == "/" {
-            format!("/{filename}")
-        } else {
-            format!("{parent_path}/{filename}")
-        };
+        match self.db.delete_note(&id) {
+            Ok(_) => {
+                // Successfully deleted the note
+                let file_path = if parent_path == "/" {
+                    format!("/{filename}")
+                } else {
+                    format!("{parent_path}/{filename}")
+                };
 
-        if let Some(inode) = self.inode_map.remove(&file_path) {
-            self.reverse_inode_map.remove(&inode);
+                if let Some(inode) = self.inode_map.remove(&file_path) {
+                    self.reverse_inode_map.remove(&inode);
+                }
+            }
+            Err(_) => {
+                // If not successful
+                reply.error(libc::EIO);
+                return;
+            }
         }
-
         reply.ok();
     }
 
-    /// Handle directory deletion operations (unified schema)
-    ///
-    /// In the unified schema, deleting a directory means deleting a note that has children.
-    /// The note acts as a folder, and we need to ensure it's empty before deletion.
-    ///
-    /// Key behaviors:
-    /// - Only deletes empty directories (standard rmdir behavior)
-    /// - Deletes the most recent note (based on updated_at) if duplicates exist
-    /// - Updates inode mappings to reflect the deletion
-    /// - Required for proper file manager and shell integration
-    /// Handle mknod operations - another way files can be created
-    /// Some systems use mknod instead of create for file creation
+    /// Only required in linux kernel before 2.6
+    /// Otherwise the kernel will call open and create
     fn mknod(
         &mut self,
         _req: &Request,
@@ -1472,9 +1634,6 @@ impl Filesystem for ExampleFuseFs {
         _rdev: u32,
         reply: ReplyEntry,
     ) {
-        eprintln!("[DEBUG] mknod called: parent={}, name={:?}, mode={:#o}",
-                 parent, name, mode);
-
         let file_name = match name.to_str() {
             Some(s) => s,
             None => {
@@ -1492,28 +1651,74 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get parent ID - None for root, Some(id) for other paths
         let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_id_from_path(&parent_path) {
-                Some(id) => Some(id),
-                None => {
-                    eprintln!("Cannot get id for parent path {parent_path}");
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                    );
                     reply.error(ENOENT);
                     return;
                 }
             }
         };
-
-        // Create the file in database
-        self.db.create(None, file_name, parent_id.as_deref());
-
-        // Create the full path for the new file
+        // Create the candidate full path
         let full_path = if parent_path == "/" {
             format!("/{file_name}")
         } else {
             format!("{parent_path}/{file_name}")
+        };
+
+        // Get the title and extension
+
+        let file_name_path = Path::new(file_name);
+        let base = file_name_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        let ext = file_name_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
+
+        let title = match base {
+            Some(t) => t,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+        let syntax = match ext {
+            Some(s) => s,
+            None => {
+                eprintln!("[ERROR] (fn setattr) Unable to get stem from {file_name}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        let content = "";
+        let abstract_text = Some("");
+        let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
+        let _id = match self.db.create_note(
+            &id,
+            &title,
+            abstract_text,
+            content,
+            &syntax,
+            parent_id.as_deref(),
+            todo_user_id,
+        ) {
+            // Get the returned id in case the API changes
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("[ERROR] Unable to create note for {full_path}: {e}");
+                reply.error(ENOENT);
+                return;
+            }
         };
 
         // Create inode for the new file
@@ -1567,41 +1772,83 @@ impl Filesystem for ExampleFuseFs {
         // get the path
         let path = format!("{parent_path}/{dirname}");
 
-        // get the id
-        let id = self
-            .db
-            .get_id_from_path(&path)
-            .expect("[ERROR] Unable to extract id from {path}");
-        // NOTE CASCADE on a Foreign Key would be nice here
-
-        // Get the children
-        let children_ids: Vec<String> = self
-            .db
-            .get_children(&id)
-            .into_iter()
-            .map(|i| i.id.clone())
-            .collect();
-
-        if children_ids.len() == 0 {
-            // Directory is empty, proceed with deletion
-            self.db.delete(&id);
-            // Ask for success
-
-            // Successfully deleted the directory
-            // Remove from inode mappings
-            let dir_path = if parent_path == "/" {
-                format!("/{dirname}")
-            } else {
-                format!("{parent_path}/{dirname}")
-            };
-
-            if let Some(inode) = self.inode_map.remove(&dir_path) {
-                self.reverse_inode_map.remove(&inode);
-            }
-            reply.ok();
+        let maybe_parent_id = if parent_path == "/" {
+            None
         } else {
+            match self.db.get_folder_id_by_path(&parent_path) {
+                Ok(maybe_id) => maybe_id,
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
+
+        // usually parent_id can be Option, here we must have a folder to delete
+        let parent_id = match maybe_parent_id {
+            Some(id) => id,
+            None => {
+                eprintln!("[ERROR] There is no id associated with the folder {path}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // NOTE CASCADE on a Foreign Key would be nice here
+        let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
+        let has_children = match self
+            .db
+            .get_child_count(Some(&parent_id), Some(todo_user_id))
+        {
+            Ok((fc, nc)) => nc + fc > 0,
+            Err(e) => {
+                eprintln!("[ERROR] (fn rmdir) Unable to get child counts from database");
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        if has_children {
             reply.error(libc::EIO);
             return;
+        }
+
+        // Directory is empty, proceed with deletion
+        match self.db.delete_folder(&parent_id) {
+            Ok(success) => {
+                if success {
+                    // Successfully deleted the directory
+                    // Remove from inode mappings
+                    let dir_path = if parent_path == "/" {
+                        format!("/{dirname}")
+                    } else {
+                        format!("{parent_path}/{dirname}")
+                    };
+
+                    if let Some(inode) = self.inode_map.remove(&dir_path) {
+                        self.reverse_inode_map.remove(&inode);
+                    }
+                    reply.ok();
+                } else {
+                    eprintln!(
+                        "[ERROR] (fn rmdir) Unable to delete directory {parent_path} with id {parent_id}"
+                    );
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[ERROR] (fn rmdir) SQL error trying to delete directory {parent_path} with id {parent_id}"
+                );
+                eprintln!("{e}");
+                reply.error(ENOENT);
+                return;
+            }
         }
     }
 }
