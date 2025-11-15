@@ -299,9 +299,10 @@ impl Filesystem for ExampleFuseFs {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        eprintln!("6 [DEBUG] getattr: ino={}", ino);
+        eprintln!("[DEBUG] getattr: ino={}", ino);
+        
+        // Handle root directory specially
         if ino == 1 {
-            // Root directory
             let attr = FileAttr {
                 ino: 1,
                 size: 0,
@@ -323,6 +324,7 @@ impl Filesystem for ExampleFuseFs {
             return;
         }
 
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -331,93 +333,92 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Extract the filename and parent path
-        let (_parent_path, _filename) = Self::split_parent_path_and_filename(&path);
+        // First, check if it's a folder/directory
+        match self.db.get_folder_id_by_path(&path) {
+            Ok(Some(_folder_id)) => {
+                // It's a directory
+                let attr = FileAttr {
+                    ino,
+                    size: 0,
+                    blocks: 0,
+                    atime: UNIX_EPOCH,
+                    mtime: UNIX_EPOCH,
+                    ctime: UNIX_EPOCH,
+                    crtime: UNIX_EPOCH,
+                    kind: FileType::Directory,
+                    perm: 0o755,
+                    nlink: 2,
+                    uid: 501,
+                    gid: 20,
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 512,
+                };
+                reply.attr(&TTL, &attr);
+                return;
+            }
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note
+            }
+            Err(e) => {
+                eprintln!("[ERROR] getattr: Database error checking for folder {}: {}", path, e);
+                reply.error(ENOENT);
+                return;
+            }
+        }
 
-        // is directory
-        if self.is_dir(&path) {
-            // This note has children, so it's a directory
-            let attr = FileAttr {
-                ino,
-                size: 0,
-                blocks: 0,
-                atime: UNIX_EPOCH,  // TODO: Parse created_at
-                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                crtime: UNIX_EPOCH, // TODO: Parse created_at
-                kind: FileType::Directory,
-                perm: 0o755,
-                nlink: 2,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-            reply.attr(&TTL, &attr);
-            return;
-        } else {
-            let id = match self.db.get_note_id_by_path(&path) {
-                Ok(maybe_id) => match maybe_id {
-                    Some(id) => id,
-                    None => {
-                        eprintln!("7 [ERROR] (fn open) Could not find id for {path}");
+        // Second, check if it's a note/file
+        match self.db.get_note_id_by_path(&path) {
+            Ok(Some(note_id)) => {
+                // It's a note/file, get the note content
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => {
+                        let size = note.content.len() as u64;
+                        let blocks = note.content.len().div_ceil(512) as u64;
+
+                        let attr = FileAttr {
+                            ino,
+                            size,
+                            blocks,
+                            atime: UNIX_EPOCH,
+                            mtime: UNIX_EPOCH,
+                            ctime: UNIX_EPOCH,
+                            crtime: UNIX_EPOCH,
+                            kind: FileType::RegularFile,
+                            perm: 0o644,
+                            nlink: 1,
+                            uid: 501,
+                            gid: 20,
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        reply.attr(&TTL, &attr);
+                        return;
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] getattr: Note with id {} not found in database", note_id);
                         reply.error(ENOENT);
                         return;
                     }
-                },
-                Err(e) => {
-                    eprintln!("8 [ERROR] (fn open) Could not find id for {path}: {e}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
-
-            let note = match self.db.get_note_by_id(&id) {
-                Ok(maybe_note) => match maybe_note {
-                    Some(note) => note,
-                    None => {
-                        eprintln!(
-                            "9 [ERROR] (fn write) Unable to find note in database with id={id} {path}"
-                        );
+                    Err(e) => {
+                        eprintln!("[ERROR] getattr: Database error retrieving note {}: {}", note_id, e);
                         reply.error(ENOENT);
                         return;
                     }
-                },
-                Err(e) => {
-                    eprintln!(
-                        "10 [ERROR] (fn write) Unable to find search for in database with id={id} {path}"
-                    );
-                    eprintln!("{e}");
-
-                    reply.error(ENOENT);
-                    return;
                 }
-            };
-
-            let size = note.content.len() as u64;
-            let blocks = note.content.len().div_ceil(512) as u64;
-
-            let attr = FileAttr {
-                ino,
-                size,
-                blocks,
-                atime: UNIX_EPOCH,  // TODO: Parse created_at
-                mtime: UNIX_EPOCH,  // TODO: Parse updated_at
-                ctime: UNIX_EPOCH,  // TODO: Parse updated_at
-                crtime: UNIX_EPOCH, // TODO: Parse created_at
-                kind: FileType::RegularFile,
-                perm: 0o644,
-                nlink: 1,
-                uid: 501,
-                gid: 20,
-                rdev: 0,
-                flags: 0,
-                blksize: 512,
-            };
-
-            reply.attr(&TTL, &attr);
-            return;
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] getattr: Path {} not found in database", path);
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ERROR] getattr: Database error checking for note {}: {}", path, e);
+                reply.error(ENOENT);
+                return;
+            }
         }
     }
 
