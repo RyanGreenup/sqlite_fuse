@@ -474,20 +474,25 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Get the folder id
-        let id = match self.db.get_folder_id_by_path(&path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("Unable to get folder for {path}");
+        // Get the folder id (special handling for root)
+        let id = if path == "/" {
+            // For root directory, we'll use a special handling
+            None
+        } else {
+            match self.db.get_folder_id_by_path(&path) {
+                Ok(maybe_id) => match maybe_id {
+                    Some(id) => Some(id),
+                    None => {
+                        eprintln!("Unable to get folder for {path}");
+                        reply.error(ENOENT);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Unable to get folder for {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
-            },
-            Err(e) => {
-                eprintln!("Unable to get folder for {path}: {e}");
-                reply.error(ENOENT);
-                return;
             }
         };
 
@@ -515,12 +520,54 @@ impl Filesystem for ExampleFuseFs {
         // TODO this should be a command line argument
         // TODO the underlying database should filter this for every query
         let todo_user_id = "84a9e6d1ba7f6fd229c4276440d43886";
-        let db_titles = match self.db.get_folder_contents_recursive(&id, todo_user_id) {
-            Ok(titles) => titles,
-            Err(e) => {
-                eprintln!("[ERROR] Unable to get titles for id = {id} at {path}: {e}");
-                reply.error(ENOENT);
-                return;
+        
+        // Handle root directory differently
+        let db_titles = if path == "/" {
+            // For root, get all top-level folders and notes
+            let mut files = Vec::new();
+            
+            // Get root folders
+            match self.db.list_folders_by_parent(None) {
+                Ok(folders) => {
+                    for folder in folders {
+                        files.push(crate::database::FileType::Directory {
+                            path: format!("/{}", folder.title),
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ERROR] Unable to get root folders: {e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            
+            // Get root notes
+            match self.db.list_notes_by_parent(None, todo_user_id) {
+                Ok(notes) => {
+                    for note in notes {
+                        files.push(crate::database::FileType::File {
+                            path: format!("/{}.{}", note.title, note.syntax),
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ERROR] Unable to get root notes: {e}");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+            
+            files
+        } else {
+            // For non-root folders, use the existing recursive function
+            match self.db.get_folder_contents_recursive(&id.unwrap(), todo_user_id) {
+                Ok(titles) => titles,
+                Err(e) => {
+                    eprintln!("[ERROR] Unable to get titles for folder at {path}: {e}");
+                    reply.error(ENOENT);
+                    return;
+                }
             }
         };
 
