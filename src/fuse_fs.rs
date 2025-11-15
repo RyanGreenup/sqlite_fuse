@@ -1076,19 +1076,13 @@ impl Filesystem for ExampleFuseFs {
         }
     }
 
-    /// Handle file opening operations (unified schema)
+    /// Handle file opening operations
     ///
     /// This method verifies that a file exists before allowing it to be opened.
     fn open(&mut self, _req: &Request, ino: u64, flags: i32, reply: fuser::ReplyOpen) {
-        eprintln!("46 [DEBUG] open: ino={}, flags={:#x}", ino, flags);
+        eprintln!("[DEBUG] open: ino={}, flags={:#x}", ino, flags);
 
-        // Check if O_CREAT flag is set (0x40 or 0x100)
-        const O_CREAT: i32 = 0x40;
-        if flags & O_CREAT != 0 {
-            eprintln!("47 [DEBUG] open called with O_CREAT flag - file creation through open!");
-        }
-
-        // Verify that the inode exists and corresponds to a valid file
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -1097,59 +1091,42 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Extract the filename and parent path for database verification
-        let (parent_path, filename) = Self::split_parent_path_and_filename(&path);
-
-        // Confirm the parent_id exists
-        let _parent_id = if parent_path == "/" {
-            None
-        } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
-                Ok(maybe_id) => maybe_id,
-                Err(e) => {
-                    eprintln!(
-                        "48 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
-                    );
-                    reply.error(ENOENT);
-                    return;
-                }
+        // First, check if it's a folder/directory - can't open directories as files
+        match self.db.get_folder_id_by_path(&path) {
+            Ok(Some(_folder_id)) => {
+                // It's a directory - return error since we're trying to open it as a file
+                reply.error(libc::EISDIR);
+                return;
             }
-        };
-
-        // Get the full path
-        let full_path = if parent_path == "/" {
-            format!("/{filename}")
-        } else {
-            format!("{parent_path}/{filename}")
-        };
-
-        // Confirm the note exists
-        let _id = match self.db.get_note_id_by_path(&full_path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("49 [ERROR] (fn open) Could not find id for {path}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note/file
+            }
             Err(e) => {
-                eprintln!("50 [ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("[ERROR] open: Database error checking for folder {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
-        };
+        }
 
-        // A directory should be accessed as a directory, not a file
-        if self.is_dir(&path) {
-            reply.error(ENOENT)
-        } else {
-            reply.opened(ino, 0);
+        // Second, check if it's a note/file
+        match self.db.get_note_id_by_path(&path) {
+            Ok(Some(_note_id)) => {
+                // It's a valid file - allow opening
+                reply.opened(ino, 0);
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] open: File {} not found in database", path);
+                reply.error(ENOENT);
+            }
+            Err(e) => {
+                eprintln!("[ERROR] open: Database error checking for note {}: {}", path, e);
+                reply.error(ENOENT);
+            }
         }
     }
 
     /// Handle file attribute setting operations
-    ///
     ///
     /// Key behaviors:
     /// - Handles size changes (truncation/extension of file content)
@@ -1173,7 +1150,9 @@ impl Filesystem for ExampleFuseFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        // Get the file path from inode
+        eprintln!("[DEBUG] setattr: ino={}, size={:?}", ino, size);
+
+        // Get path from inode
         let path = match self.get_path_from_inode(ino) {
             Some(path) => path.clone(),
             None => {
@@ -1182,89 +1161,66 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // Extract the filename and parent path for database operations
-        let (_parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
-        } else {
-            ("/", &path[..])
-        };
-
-        /*
-        // Handle regular files - strip extension and find note by title
-        let parent_id = if parent_path == "/" {
-            None
-        } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
-                Ok(maybe_id) => maybe_id,
-                Err(e) => {
-                    eprintln!(
-                        "[ERROR] (fn setattr) Unable to query database for id for the directory {parent_path}: {e}"
-                    );
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
-        };
-        */
-
-        let file_name_path = Path::new(filename);
-        let base = file_name_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned());
-        let ext = file_name_path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned());
-        let title = match base {
-            Some(t) => t,
-            None => {
-                eprintln!("52 [ERROR] (fn setattr) Unable to get stem from {filename}");
-                reply.error(ENOENT);
+        // First, check if it's a folder/directory
+        match self.db.get_folder_id_by_path(&path) {
+            Ok(Some(_folder_id)) => {
+                // It's a directory - return directory attributes
+                let attr = FileAttr {
+                    ino,
+                    size: 0,
+                    blocks: 0,
+                    atime: UNIX_EPOCH,
+                    mtime: UNIX_EPOCH,
+                    ctime: UNIX_EPOCH,
+                    crtime: UNIX_EPOCH,
+                    kind: FileType::Directory,
+                    perm: mode.unwrap_or(0o755) as u16,
+                    nlink: 2,
+                    uid: uid.unwrap_or(501),
+                    gid: gid.unwrap_or(20),
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 512,
+                };
+                reply.attr(&TTL, &attr);
                 return;
             }
-        };
-        let syntax = match ext {
-            Some(s) => s,
-            None => {
-                eprintln!("53 [ERROR] (fn setattr) Unable to get stem from {filename}");
-                reply.error(ENOENT);
-                return;
+            Ok(None) => {
+                // Not a directory, continue to check if it's a note/file
             }
-        };
-
-        let id = match self.db.get_note_id_by_path(&path) {
-            Ok(maybe_id) => match maybe_id {
-                Some(id) => id,
-                None => {
-                    eprintln!("54 [ERROR] (fn open) Could not find id for {path}");
-                    reply.error(ENOENT);
-                    return;
-                }
-            },
             Err(e) => {
-                eprintln!("55 [ERROR] (fn open) Could not find id for {path}: {e}");
+                eprintln!("[ERROR] setattr: Database error checking for folder {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
-        };
+        }
 
-        let note = match self.db.get_note_by_id(&id) {
-            Ok(maybe_note) => match maybe_note {
-                Some(note) => note,
-                None => {
-                    eprintln!(
-                        "56 [ERROR] (fn setattr) Unable to find note in database with id={id} {path}"
-                    );
-                    reply.error(ENOENT);
-                    return;
+        // Second, check if it's a note/file and get current content
+        let (note_id, mut note) = match self.db.get_note_id_by_path(&path) {
+            Ok(Some(note_id)) => {
+                // Get the note content
+                match self.db.get_note_by_id(&note_id) {
+                    Ok(Some(note)) => (note_id, note),
+                    Ok(None) => {
+                        eprintln!("[ERROR] setattr: Note with id {} not found in database", note_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] setattr: Database error retrieving note {}: {}", note_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
                 }
-            },
+            }
+            Ok(None) => {
+                // Neither a directory nor a note - doesn't exist
+                eprintln!("[DEBUG] setattr: File {} not found in database", path);
+                reply.error(ENOENT);
+                return;
+            }
             Err(e) => {
-                eprintln!(
-                    "57 [ERROR] (fn setattr) Unable to find search for in database with id={id} {path}"
-                );
-                eprintln!("{e}");
+                eprintln!("[ERROR] setattr: Database error checking for note {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
@@ -1282,49 +1238,40 @@ impl Filesystem for ExampleFuseFs {
                 content_bytes.resize(target_size, 0);
             }
 
-            // Write the new_content too
-            // TODO should we bother with this?
+            // Update content in database
             let new_content = String::from_utf8_lossy(&content_bytes).to_string();
-            //
-            let _success = match self.db.update_note(
-                &id,
-                &title,
+            match self.db.update_note(
+                &note_id,
+                &note.title,
                 note.abstract_text.as_deref(),
                 &new_content,
-                &syntax,
+                &note.syntax,
             ) {
-                Ok(is_success) => {
-                    if is_success {
-                        is_success
-                    } else {
-                        eprintln!("59 [ERROR] (fn setattr) Unable to update {path} with id={id}");
-                        reply.error(ENOENT);
-                        return;
-                    }
+                Ok(_success) => {
+                    // Update our local copy with new content
+                    note.content = new_content;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "60 [ERROR] (fn setattr) Sql error trying to write to {path} with id={id}"
-                    );
-                    eprintln!("{e}");
-                    reply.error(ENOENT);
+                    eprintln!("[ERROR] setattr: Failed to update note content: {}", e);
+                    reply.error(libc::EIO);
                     return;
                 }
             };
         }
 
-        let size = note.content.len() as u64;
-        let blocks = note.content.len().div_ceil(512) as u64;
+        // Calculate file size and blocks
+        let file_size = note.content.len() as u64;
+        let file_blocks = note.content.len().div_ceil(512) as u64;
 
         // Return updated file attributes
         let attr = FileAttr {
             ino,
-            size,
-            blocks,
-            atime: UNIX_EPOCH,  // TODO: Parse created_at string from db
-            mtime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
-            ctime: UNIX_EPOCH,  // TODO: Parse updated_at string from db
-            crtime: UNIX_EPOCH, // TODO: Parse created_at string from db
+            size: file_size,
+            blocks: file_blocks,
+            atime: UNIX_EPOCH,
+            mtime: UNIX_EPOCH,
+            ctime: UNIX_EPOCH,
+            crtime: UNIX_EPOCH,
             kind: FileType::RegularFile,
             perm: mode.unwrap_or(0o644) as u16,
             nlink: 1,
