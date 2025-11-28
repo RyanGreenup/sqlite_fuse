@@ -27,7 +27,9 @@ CREATE TABLE notes (
     user_id TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
+    FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE,
+    -- Include syntax to for pandoc sake
+    UNIQUE(parent_id, title, syntax)
   );
 CREATE INDEX idx_notes_user_id ON notes(user_id);
 CREATE INDEX idx_notes_parent_id ON notes(parent_id);
