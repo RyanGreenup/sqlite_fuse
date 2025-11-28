@@ -2,9 +2,9 @@ mod database;
 mod fuse_fs;
 use crate::fuse_fs::ExampleFuseFs;
 
+use chrono_tz::Tz;
 use clap::{Parser, Subcommand};
 use fuser::MountOption;
-use chrono_tz::Tz;
 use std::str::FromStr;
 
 #[derive(Parser)]
