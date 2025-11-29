@@ -1707,26 +1707,31 @@ impl Filesystem for ExampleFuseFs {
                     Ok(Some(note)) => {
                         // Extract title and extension from new filename
                         let file_name_path = Path::new(new_name);
-                        let title = file_name_path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| {
+                        let title = match file_name_path.file_stem() {
+                            Some(stem) => stem.to_string_lossy().into_owned(),
+                            None => {
                                 eprintln!(
                                     "[ERROR] rename: Unable to extract title from {}",
                                     new_name
                                 );
-                                new_name.to_string()
-                            });
-                        let syntax = file_name_path
-                            .extension()
-                            .map(|e| e.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| {
+                                reply.error(libc::EINVAL);
+                                return;
+                            }
+                        };
+
+                        // Extension is required because our database stores the syntax field
+                        // separately for use by the front-end application to determine file type
+                        let syntax = match file_name_path.extension() {
+                            Some(ext) => ext.to_string_lossy().into_owned(),
+                            None => {
                                 eprintln!(
-                                    "[ERROR] rename: Unable to extract extension from {}",
-                                    new_name
+                                    "[ERROR] rename: Cannot rename file without extension (e.g., {}.txt, {}.md)",
+                                    new_name, new_name
                                 );
-                                "txt".to_string()
-                            });
+                                reply.error(libc::EINVAL);
+                                return;
+                            }
+                        };
 
                         // Update note with new title and syntax
                         match self.db.update_note(
