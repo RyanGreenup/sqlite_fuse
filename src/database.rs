@@ -15,9 +15,6 @@ impl Database {
         }
     }
 
-    pub fn with_utc(connection: Connection) -> Self {
-        Self::new(connection, None)
-    }
     pub fn create_folder(&self, title: &str, parent_id: Option<&str>, user_id: &str) -> Result<String> {
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
         let now = Utc::now()
@@ -215,6 +212,7 @@ impl Database {
         note_iter.collect()
     }
 
+    #[cfg(test)]
     pub fn get_folder_path_by_id(&self, id: &str, user_id: &str) -> Result<Option<String>> {
         let mut stmt = self
             .connection
@@ -241,6 +239,7 @@ impl Database {
         }
     }
 
+    #[cfg(test)]
     pub fn get_note_path_by_id(&self, id: &str) -> Result<Option<String>> {
         let mut stmt = self
             .connection
@@ -267,6 +266,7 @@ impl Database {
         }
     }
 
+    #[cfg(test)]
     pub fn get_folder_contents_recursive(
         &self,
         folder_id: &str,
