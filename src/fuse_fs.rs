@@ -8,8 +8,7 @@ use std::{
 
 
 use chrono::{DateTime, Utc};
-use chrono_tz::{Australia::Sydney, Tz};
-const TIMEZONE: Tz = Sydney; // Australia/Sydney timezone
+use chrono_tz::Tz;
 
 use fuser::Filesystem;
 
@@ -160,12 +159,6 @@ impl ExampleFuseFs {
         }
 
         false
-    }
-
-    fn current_timestamp() -> String {
-        let utc_now = Utc::now();
-        let sydney_time = utc_now.with_timezone(&TIMEZONE);
-        sydney_time.format("%Y-%m-%d %H:%M:%S").to_string()
     }
 
     pub fn new(connection: Connection, timezone: Option<Tz>, user_id: String) -> Result<Self, Box<dyn Error>> {
