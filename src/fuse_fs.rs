@@ -39,8 +39,9 @@ impl ExampleFuseFs {
         }
         let db_path = Self::normalize_path_for_db(path);
         match self.db.get_folder_id_by_path(db_path, USER_ID) {
-            Ok(_id) => true,
-            Err(_e) => false,
+            Ok(Some(_id)) => true,  // Folder exists
+            Ok(None) => false,       // Not a folder (file or doesn't exist)
+            Err(_e) => false,        // Database error
         }
     }
 
