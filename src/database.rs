@@ -1731,7 +1731,7 @@ mod tests {
         let (folder_count, note_count) = db
             .get_child_count(Some(&folder_id), Some("non_existent_user"))
             .expect("Failed to get count for non-existent user");
-        assert_eq!(folder_count, 1); // Folders are not user-specific, so we created one above
+        assert_eq!(folder_count, 0); // No child folders created yet
         assert_eq!(note_count, 0); // No notes for this user
 
         // Test deeply nested structure
