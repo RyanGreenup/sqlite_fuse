@@ -48,17 +48,6 @@ impl ExampleFuseFs {
         UNIX_EPOCH + Duration::from_secs(dt.timestamp() as u64)
     }
 
-    fn split_parent_path_and_filename(path: &str) -> (String, String) {
-        let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
-            let parent = &path[..pos];
-            let name = &path[pos + 1..];
-            (if parent.is_empty() { "/" } else { parent }, name)
-        } else {
-            ("/", path)
-        };
-        (parent_path.to_string(), filename.to_string())
-    }
-
     /// Normalize a FUSE path for database queries
     ///
     /// The FUSE layer uses paths with leading slashes (e.g., "/1", "/1/2"),
