@@ -1585,7 +1585,7 @@ mod tests {
         let folder_id = db
             .create_folder("SingleLevel", None, user_id)
             .expect("Failed to create folder");
-        let child_folder_id = db
+        let _child_folder_id = db
             .create_folder("ChildFolder", Some(&folder_id), user_id)
             .expect("Failed to create child folder");
 
@@ -1643,10 +1643,10 @@ mod tests {
         let parent_folder_id = db
             .create_folder("Parent", None, user_id)
             .expect("Failed to create parent folder");
-        let child_folder1_id = db
+        let _child_folder1_id = db
             .create_folder("Child1", Some(&parent_folder_id), user_id)
             .expect("Failed to create child folder 1");
-        let child_folder2_id = db
+        let _child_folder2_id = db
             .create_folder("Child2", Some(&parent_folder_id), user_id)
             .expect("Failed to create child folder 2");
 
