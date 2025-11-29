@@ -84,10 +84,8 @@ fn main() {
             println!("{:<40} {:<15}", "User ID", "Folder Count");
             println!("{:-<55}", "");
 
-            for user_result in users {
-                if let Ok((user_id, count)) = user_result {
-                    println!("{user_id:<40} {count:<15}");
-                }
+            for (user_id, count) in users.flatten() {
+                println!("{user_id:<40} {count:<15}");
             }
 
             std::process::exit(0);
