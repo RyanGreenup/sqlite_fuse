@@ -9,7 +9,7 @@ const DEBUG: bool = true;
 
 const USER_ID: &str = "84a9e6d1ba7f6fd229c4276440d43886";
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use chrono_tz::{Australia::Sydney, Tz};
 const TIMEZONE: Tz = Sydney; // Australia/Sydney timezone
 
@@ -43,6 +43,11 @@ impl ExampleFuseFs {
             Ok(None) => false,       // Not a folder (file or doesn't exist)
             Err(_e) => false,        // Database error
         }
+    }
+
+    /// Converts a chrono::DateTime<Utc> to SystemTime for FUSE file attributes
+    fn datetime_to_systemtime(dt: &DateTime<Utc>) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(dt.timestamp() as u64)
     }
 
     fn split_parent_path_and_filename(path: &str) -> (String, String) {
@@ -255,28 +260,43 @@ impl Filesystem for ExampleFuseFs {
 
         // First, check if it's a folder/directory
         match self.db.get_folder_id_by_path(db_path, USER_ID) {
-            Ok(Some(_folder_id)) => {
-                // It's a directory
-                let inode = self.get_or_create_inode(&full_path);
-                let attr = FileAttr {
-                    ino: inode,
-                    size: 0,
-                    blocks: 0,
-                    atime: UNIX_EPOCH,
-                    mtime: UNIX_EPOCH,
-                    ctime: UNIX_EPOCH,
-                    crtime: UNIX_EPOCH,
-                    kind: FileType::Directory,
-                    perm: 0o755,
-                    nlink: 2,
-                    uid: 501,
-                    gid: 20,
-                    rdev: 0,
-                    flags: 0,
-                    blksize: 512,
-                };
-                reply.entry(&TTL, &attr, 0);
-                return;
+            Ok(Some(folder_id)) => {
+                // It's a directory - retrieve full folder object for timestamps
+                match self.db.get_folder_by_id(&folder_id, USER_ID) {
+                    Ok(Some(folder)) => {
+                        let inode = self.get_or_create_inode(&full_path);
+                        let attr = FileAttr {
+                            ino: inode,
+                            size: 0,
+                            blocks: 0,
+                            atime: Self::datetime_to_systemtime(&folder.updated_at),
+                            mtime: Self::datetime_to_systemtime(&folder.updated_at),
+                            ctime: Self::datetime_to_systemtime(&folder.updated_at),
+                            crtime: Self::datetime_to_systemtime(&folder.created_at),
+                            kind: FileType::Directory,
+                            perm: 0o755,
+                            nlink: 2,
+                            uid: 501,
+                            gid: 20,
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        reply.entry(&TTL, &attr, 0);
+                        return;
+                    }
+                    Ok(None) => {
+                        // Folder ID found but folder doesn't exist - database inconsistency
+                        eprintln!("[ERROR] lookup: Folder ID found but folder object not retrieved: {}", folder_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] lookup: Failed to get folder by ID {}: {}", folder_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
             }
             Ok(None) => {
                 // Not a directory, continue to check if it's a note
@@ -304,10 +324,10 @@ impl Filesystem for ExampleFuseFs {
                             ino: inode,
                             size: content_size as u64,
                             blocks: content_size.div_ceil(512) as u64,
-                            atime: UNIX_EPOCH,
-                            mtime: UNIX_EPOCH,
-                            ctime: UNIX_EPOCH,
-                            crtime: UNIX_EPOCH,
+                            atime: Self::datetime_to_systemtime(&note.updated_at),
+                            mtime: Self::datetime_to_systemtime(&note.updated_at),
+                            ctime: Self::datetime_to_systemtime(&note.updated_at),
+                            crtime: Self::datetime_to_systemtime(&note.created_at),
                             kind: FileType::RegularFile,
                             perm: 0o644,
                             nlink: 1,
@@ -395,27 +415,41 @@ impl Filesystem for ExampleFuseFs {
 
         // First, check if it's a folder/directory
         match self.db.get_folder_id_by_path(db_path, USER_ID) {
-            Ok(Some(_folder_id)) => {
-                // It's a directory
-                let attr = FileAttr {
-                    ino,
-                    size: 0,
-                    blocks: 0,
-                    atime: UNIX_EPOCH,
-                    mtime: UNIX_EPOCH,
-                    ctime: UNIX_EPOCH,
-                    crtime: UNIX_EPOCH,
-                    kind: FileType::Directory,
-                    perm: 0o755,
-                    nlink: 2,
-                    uid: 501,
-                    gid: 20,
-                    rdev: 0,
-                    flags: 0,
-                    blksize: 512,
-                };
-                reply.attr(&TTL, &attr);
-                return;
+            Ok(Some(folder_id)) => {
+                // It's a directory - retrieve full folder object for timestamps
+                match self.db.get_folder_by_id(&folder_id, USER_ID) {
+                    Ok(Some(folder)) => {
+                        let attr = FileAttr {
+                            ino,
+                            size: 0,
+                            blocks: 0,
+                            atime: Self::datetime_to_systemtime(&folder.updated_at),
+                            mtime: Self::datetime_to_systemtime(&folder.updated_at),
+                            ctime: Self::datetime_to_systemtime(&folder.updated_at),
+                            crtime: Self::datetime_to_systemtime(&folder.created_at),
+                            kind: FileType::Directory,
+                            perm: 0o755,
+                            nlink: 2,
+                            uid: 501,
+                            gid: 20,
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        reply.attr(&TTL, &attr);
+                        return;
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] getattr: Folder ID found but folder object not retrieved: {}", folder_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] getattr: Failed to get folder by ID {}: {}", folder_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
             }
             Ok(None) => {
                 // Not a directory, continue to check if it's a note
@@ -443,10 +477,10 @@ impl Filesystem for ExampleFuseFs {
                             ino,
                             size,
                             blocks,
-                            atime: UNIX_EPOCH,
-                            mtime: UNIX_EPOCH,
-                            ctime: UNIX_EPOCH,
-                            crtime: UNIX_EPOCH,
+                            atime: Self::datetime_to_systemtime(&note.updated_at),
+                            mtime: Self::datetime_to_systemtime(&note.updated_at),
+                            ctime: Self::datetime_to_systemtime(&note.updated_at),
+                            crtime: Self::datetime_to_systemtime(&note.created_at),
                             kind: FileType::RegularFile,
                             perm: 0o644,
                             nlink: 1,
@@ -1383,27 +1417,41 @@ impl Filesystem for ExampleFuseFs {
 
         // First, check if it's a folder/directory
         match self.db.get_folder_id_by_path(db_path, USER_ID) {
-            Ok(Some(_folder_id)) => {
-                // It's a directory - return directory attributes
-                let attr = FileAttr {
-                    ino,
-                    size: 0,
-                    blocks: 0,
-                    atime: UNIX_EPOCH,
-                    mtime: UNIX_EPOCH,
-                    ctime: UNIX_EPOCH,
-                    crtime: UNIX_EPOCH,
-                    kind: FileType::Directory,
-                    perm: mode.unwrap_or(0o755) as u16,
-                    nlink: 2,
-                    uid: uid.unwrap_or(501),
-                    gid: gid.unwrap_or(20),
-                    rdev: 0,
-                    flags: 0,
-                    blksize: 512,
-                };
-                reply.attr(&TTL, &attr);
-                return;
+            Ok(Some(folder_id)) => {
+                // It's a directory - retrieve full folder object for timestamps
+                match self.db.get_folder_by_id(&folder_id, USER_ID) {
+                    Ok(Some(folder)) => {
+                        let attr = FileAttr {
+                            ino,
+                            size: 0,
+                            blocks: 0,
+                            atime: Self::datetime_to_systemtime(&folder.updated_at),
+                            mtime: Self::datetime_to_systemtime(&folder.updated_at),
+                            ctime: Self::datetime_to_systemtime(&folder.updated_at),
+                            crtime: Self::datetime_to_systemtime(&folder.created_at),
+                            kind: FileType::Directory,
+                            perm: mode.unwrap_or(0o755) as u16,
+                            nlink: 2,
+                            uid: uid.unwrap_or(501),
+                            gid: gid.unwrap_or(20),
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        reply.attr(&TTL, &attr);
+                        return;
+                    }
+                    Ok(None) => {
+                        eprintln!("[ERROR] setattr: Folder ID found but folder object not retrieved: {}", folder_id);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] setattr: Failed to get folder by ID {}: {}", folder_id, e);
+                        reply.error(ENOENT);
+                        return;
+                    }
+                }
             }
             Ok(None) => {
                 // Not a directory, continue to check if it's a note/file
@@ -1480,8 +1528,16 @@ impl Filesystem for ExampleFuseFs {
                 &note.syntax,
             ) {
                 Ok(_success) => {
-                    // Update our local copy with new content
-                    note.content = new_content;
+                    // Re-fetch the note to get updated timestamps from database
+                    match self.db.get_note_by_id(&note_id) {
+                        Ok(Some(updated_note)) => {
+                            note = updated_note;
+                        }
+                        Ok(None) | Err(_) => {
+                            // If we can't re-fetch, just update the content locally
+                            note.content = new_content;
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("[ERROR] setattr: Failed to update note content: {}", e);
@@ -1500,10 +1556,10 @@ impl Filesystem for ExampleFuseFs {
             ino,
             size: file_size,
             blocks: file_blocks,
-            atime: UNIX_EPOCH,
-            mtime: UNIX_EPOCH,
-            ctime: UNIX_EPOCH,
-            crtime: UNIX_EPOCH,
+            atime: Self::datetime_to_systemtime(&note.updated_at),
+            mtime: Self::datetime_to_systemtime(&note.updated_at),
+            ctime: Self::datetime_to_systemtime(&note.updated_at),
+            crtime: Self::datetime_to_systemtime(&note.created_at),
             kind: FileType::RegularFile,
             perm: mode.unwrap_or(0o644) as u16,
             nlink: 1,
