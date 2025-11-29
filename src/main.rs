@@ -22,6 +22,10 @@ struct Cli {
     #[arg(long, default_value = "Australia/Sydney")]
     timezone: String,
 
+    /// User ID for database operations (required)
+    #[arg(long)]
+    user_id: String,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -34,6 +38,8 @@ enum Commands {
         #[arg(short, long)]
         list: bool,
     },
+    /// List all user IDs in the database
+    ListUsers,
 }
 
 fn main() {
@@ -48,6 +54,43 @@ fn main() {
             } else {
                 println!("Not printing testing lists...");
             }
+        }
+        Some(Commands::ListUsers) => {
+            // Open database connection for list-users command
+            let con = match cli.database {
+                Some(path) => {
+                    rusqlite::Connection::open(path).expect("Unable to Connect to Database")
+                }
+                None => {
+                    eprintln!("Error: Database path is required for list-users command");
+                    std::process::exit(1);
+                }
+            };
+
+            // Query to get all user IDs with their folder counts
+            let mut stmt = con
+                .prepare(
+                    "SELECT user_id, COUNT(*) as folder_count FROM folders GROUP BY user_id ORDER BY folder_count DESC"
+                )
+                .expect("Failed to prepare statement");
+
+            let users = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+                })
+                .expect("Failed to query users");
+
+            println!("User IDs in database:");
+            println!("{:<40} {:<15}", "User ID", "Folder Count");
+            println!("{:-<55}", "");
+
+            for user_result in users {
+                if let Ok((user_id, count)) = user_result {
+                    println!("{:<40} {:<15}", user_id, count);
+                }
+            }
+
+            std::process::exit(0);
         }
         None => {}
     }
@@ -90,7 +133,7 @@ fn main() {
         }
     };
 
-    let fs = match ExampleFuseFs::new(con, timezone) {
+    let fs = match ExampleFuseFs::new(con, timezone, cli.user_id) {
         Ok(fs) => fs,
         Err(e) => {
             eprintln!("Failed to open database: {e}");
