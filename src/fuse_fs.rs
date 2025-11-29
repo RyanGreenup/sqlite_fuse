@@ -2044,37 +2044,31 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        // get the path
-        let path = format!("{parent_path}/{dirname}");
-
-        let maybe_parent_id = if parent_path == "/" {
-            None
+        // Construct the path of the directory to delete
+        let path = if parent_path == "/" {
+            format!("/{dirname}")
         } else {
-            let db_parent_path = Self::normalize_path_for_db(&parent_path);
-            match self.db.get_folder_id_by_path(db_parent_path, USER_ID) {
-                Ok(maybe_id) => maybe_id,
-                Err(e) => {
-                    eprintln!(
-                        "80 [ERROR] (fn open) Unable to query database for id for the directory {parent_path}: {e}"
-                    );
-                    reply.error(ENOENT);
-                    return;
-                }
-            }
+            format!("{parent_path}/{dirname}")
         };
 
-        // usually parent_id can be Option, here we must have a folder to delete
-        let parent_id = match maybe_parent_id {
-            Some(id) => id,
-            None => {
-                eprintln!("81 [ERROR] There is no id associated with the folder {path}");
+        // Get the folder ID of the directory being deleted
+        let db_path = Self::normalize_path_for_db(&path);
+        let folder_id = match self.db.get_folder_id_by_path(db_path, USER_ID) {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                eprintln!("[ERROR] rmdir: Folder {} not found", path);
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ERROR] rmdir: Database error looking up folder {}: {}", path, e);
                 reply.error(ENOENT);
                 return;
             }
         };
 
         // NOTE CASCADE on a Foreign Key would be nice here
-        let has_children = match self.db.get_child_count(Some(&parent_id), USER_ID) {
+        let has_children = match self.db.get_child_count(Some(&folder_id), USER_ID) {
             Ok((fc, nc)) => nc + fc > 0,
             Err(e) => {
                 eprintln!("82 [ERROR] (fn rmdir) Unable to get child counts from database");
@@ -2090,24 +2084,19 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Directory is empty, proceed with deletion
-        match self.db.delete_folder(&parent_id, USER_ID) {
+        match self.db.delete_folder(&folder_id, USER_ID) {
             Ok(success) => {
                 if success {
                     // Successfully deleted the directory
                     // Remove from inode mappings
-                    let dir_path = if parent_path == "/" {
-                        format!("/{dirname}")
-                    } else {
-                        format!("{parent_path}/{dirname}")
-                    };
-
-                    if let Some(inode) = self.inode_map.remove(&dir_path) {
+                    if let Some(inode) = self.inode_map.remove(&path) {
                         self.reverse_inode_map.remove(&inode);
                     }
                     reply.ok();
                 } else {
                     eprintln!(
-                        "84 [ERROR] (fn rmdir) Unable to delete directory {parent_path} with id {parent_id}"
+                        "[ERROR] rmdir: Unable to delete directory {} with id {}",
+                        path, folder_id
                     );
                     reply.error(ENOENT);
                     return;
@@ -2115,9 +2104,9 @@ impl Filesystem for ExampleFuseFs {
             }
             Err(e) => {
                 eprintln!(
-                    "85 [ERROR] (fn rmdir) SQL error trying to delete directory {parent_path} with id {parent_id}"
+                    "[ERROR] rmdir: SQL error trying to delete directory {} with id {}: {}",
+                    path, folder_id, e
                 );
-                eprintln!("{e}");
                 reply.error(ENOENT);
                 return;
             }
