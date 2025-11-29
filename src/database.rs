@@ -473,6 +473,7 @@ pub struct NoteContent<'a> {
     pub syntax: &'a str,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Folder {
     pub id: String,
@@ -483,6 +484,7 @@ pub struct Folder {
     pub updated_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Note {
     pub id: String,
