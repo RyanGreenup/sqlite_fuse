@@ -15,6 +15,10 @@ CREATE TABLE folders (
 );
 CREATE INDEX idx_folders_user_id ON folders(user_id);
 CREATE INDEX idx_folders_parent_id ON folders(parent_id);
+-- Composite index for directory listings with user filter (readdir, child counts)
+CREATE INDEX idx_folders_parent_user_title ON folders(parent_id, user_id, title);
+-- Partial index for root folder listings (optimized for parent_id IS NULL queries)
+CREATE INDEX idx_folders_root_user_title ON folders(user_id, title) WHERE parent_id IS NULL;
 
 ------------------------------------------------------------
 -- Notes----------------------------------------------------
@@ -41,6 +45,10 @@ CREATE INDEX idx_notes_updated_at ON notes(updated_at);
 CREATE INDEX idx_notes_parent_title ON notes(parent_id, title);
 CREATE INDEX idx_notes_parent_updated ON notes(parent_id, updated_at);
 CREATE INDEX idx_notes_content ON notes(content IS NULL);
+-- Composite index for child count queries (used in rmdir validation)
+CREATE INDEX idx_notes_parent_user ON notes(parent_id, user_id);
+-- Partial index for root note listings (optimized for parent_id IS NULL queries)
+CREATE INDEX idx_notes_root_user_title ON notes(user_id, title) WHERE parent_id IS NULL;
 
 ------------------------------------------------------------
 -- FTS -----------------------------------------------------
