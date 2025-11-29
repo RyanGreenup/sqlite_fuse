@@ -5,8 +5,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-
-
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
@@ -36,10 +34,13 @@ impl ExampleFuseFs {
             return true; // Root is always a directory
         }
         let db_path = Self::normalize_path_for_db(path);
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
-            Ok(Some(_id)) => true,  // Folder exists
-            Ok(None) => false,       // Not a folder (file or doesn't exist)
-            Err(_e) => false,        // Database error
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
+            Ok(Some(_id)) => true, // Folder exists
+            Ok(None) => false,     // Not a folder (file or doesn't exist)
+            Err(_e) => false,      // Database error
         }
     }
 
@@ -150,7 +151,11 @@ impl ExampleFuseFs {
         false
     }
 
-    pub fn new(connection: Connection, timezone: Option<Tz>, user_id: String) -> Result<Self, Box<dyn Error>> {
+    pub fn new(
+        connection: Connection,
+        timezone: Option<Tz>,
+        user_id: String,
+    ) -> Result<Self, Box<dyn Error>> {
         /*
         // Create performance indexes for unified notes table
         db.execute(
@@ -248,7 +253,10 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(folder_id)) => {
                 // It's a directory - retrieve full folder object for timestamps
                 match self.db.get_folder_by_id(&folder_id, self.user_id.as_str()) {
@@ -276,7 +284,9 @@ impl Filesystem for ExampleFuseFs {
                     }
                     Ok(None) => {
                         // Folder ID found but folder doesn't exist - database inconsistency
-                        eprintln!("[ERROR] lookup: Folder ID found but folder object not retrieved: {folder_id}");
+                        eprintln!(
+                            "[ERROR] lookup: Folder ID found but folder object not retrieved: {folder_id}"
+                        );
                         reply.error(ENOENT);
                         return;
                     }
@@ -291,9 +301,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] lookup: Database error checking for folder {full_path}: {e}"
-                );
+                eprintln!("[ERROR] lookup: Database error checking for folder {full_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -328,15 +336,11 @@ impl Filesystem for ExampleFuseFs {
                         reply.entry(&TTL, &attr, 0);
                     }
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] lookup: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] lookup: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] lookup: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] lookup: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                     }
                 }
@@ -347,9 +351,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] lookup: Database error checking for note {full_path}: {e}"
-                );
+                eprintln!("[ERROR] lookup: Database error checking for note {full_path}: {e}");
                 reply.error(ENOENT);
             }
         }
@@ -394,7 +396,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&path);
 
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(folder_id)) => {
                 // It's a directory - retrieve full folder object for timestamps
                 match self.db.get_folder_by_id(&folder_id, self.user_id.as_str()) {
@@ -420,7 +425,9 @@ impl Filesystem for ExampleFuseFs {
                         return;
                     }
                     Ok(None) => {
-                        eprintln!("[ERROR] getattr: Folder ID found but folder object not retrieved: {folder_id}");
+                        eprintln!(
+                            "[ERROR] getattr: Folder ID found but folder object not retrieved: {folder_id}"
+                        );
                         reply.error(ENOENT);
                         return;
                     }
@@ -435,9 +442,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] getattr: Database error checking for folder {path}: {e}"
-                );
+                eprintln!("[ERROR] getattr: Database error checking for folder {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -472,15 +477,11 @@ impl Filesystem for ExampleFuseFs {
                         reply.attr(&TTL, &attr);
                     }
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] getattr: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] getattr: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] getattr: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] getattr: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                     }
                 }
@@ -491,9 +492,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] getattr: Database error checking for note {path}: {e}"
-                );
+                eprintln!("[ERROR] getattr: Database error checking for note {path}: {e}");
                 reply.error(ENOENT);
             }
         }
@@ -525,7 +524,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&path);
 
         // Check if it's a directory - directories cannot be read as files
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(_folder_id)) => {
                 // It's a directory - cannot read as file
                 eprintln!("[ERROR] read: Attempted to read directory {path} as file");
@@ -536,9 +538,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] read: Database error checking for folder {path}: {e}"
-                );
+                eprintln!("[ERROR] read: Database error checking for folder {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -561,15 +561,11 @@ impl Filesystem for ExampleFuseFs {
                         }
                     }
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] read: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] read: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] read: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] read: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                     }
                 }
@@ -580,9 +576,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] read: Database error checking for note {path}: {e}"
-                );
+                eprintln!("[ERROR] read: Database error checking for note {path}: {e}");
                 reply.error(ENOENT);
             }
         }
@@ -613,20 +607,19 @@ impl Filesystem for ExampleFuseFs {
             None
         } else {
             let db_path = Self::normalize_path_for_db(&path);
-            match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+            match self
+                .db
+                .get_folder_id_by_path(db_path, self.user_id.as_str())
+            {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     // Not a directory - cannot readdir on a file
-                    eprintln!(
-                        "[ERROR] readdir: Attempted to readdir on non-directory {path}"
-                    );
+                    eprintln!("[ERROR] readdir: Attempted to readdir on non-directory {path}");
                     reply.error(libc::ENOTDIR);
                     return;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[ERROR] readdir: Database error checking for folder {path}: {e}"
-                    );
+                    eprintln!("[ERROR] readdir: Database error checking for folder {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -700,7 +693,10 @@ impl Filesystem for ExampleFuseFs {
             let current_folder_id = folder_id.unwrap();
 
             // Get direct child folders
-            match self.db.list_folders_by_parent(Some(&current_folder_id), self.user_id.as_str()) {
+            match self
+                .db
+                .list_folders_by_parent(Some(&current_folder_id), self.user_id.as_str())
+            {
                 Ok(folders) => {
                     for folder in folders {
                         let name = folder.title.clone();
@@ -717,9 +713,7 @@ impl Filesystem for ExampleFuseFs {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[ERROR] readdir: Unable to get child folders for {path}: {e}"
-                    );
+                    eprintln!("[ERROR] readdir: Unable to get child folders for {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -746,9 +740,7 @@ impl Filesystem for ExampleFuseFs {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[ERROR] readdir: Unable to get child notes for {path}: {e}"
-                    );
+                    eprintln!("[ERROR] readdir: Unable to get child notes for {path}: {e}");
                     reply.error(ENOENT);
                     return;
                 }
@@ -811,7 +803,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&full_path);
 
         // Check if directory already exists
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(_existing_id)) => {
                 eprintln!("[ERROR] mkdir: Directory {full_path} already exists");
                 reply.error(libc::EEXIST);
@@ -853,7 +848,10 @@ impl Filesystem for ExampleFuseFs {
             None
         } else {
             let db_parent_path = Self::normalize_path_for_db(&parent_path);
-            match self.db.get_folder_id_by_path(db_parent_path, self.user_id.as_str()) {
+            match self
+                .db
+                .get_folder_id_by_path(db_parent_path, self.user_id.as_str())
+            {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     eprintln!("[ERROR] mkdir: Parent directory {parent_path} not found");
@@ -871,16 +869,18 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Create the folder in the database
-        let _folder_id = match self.db.create_folder(folder_name, parent_id.as_deref(), self.user_id.as_str()) {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!(
-                    "[ERROR] mkdir: Unable to create folder {full_path}: {e}"
-                );
-                reply.error(libc::EIO);
-                return;
-            }
-        };
+        let _folder_id =
+            match self
+                .db
+                .create_folder(folder_name, parent_id.as_deref(), self.user_id.as_str())
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("[ERROR] mkdir: Unable to create folder {full_path}: {e}");
+                    reply.error(libc::EIO);
+                    return;
+                }
+            };
 
         // Create inode for the new directory
         let inode = self.get_or_create_inode(&full_path);
@@ -1011,9 +1011,7 @@ impl Filesystem for ExampleFuseFs {
         let title = match file_name_path.file_stem() {
             Some(stem) => stem.to_string_lossy().into_owned(),
             None => {
-                eprintln!(
-                    "[ERROR] create: Unable to extract title from filename {file_name}"
-                );
+                eprintln!("[ERROR] create: Unable to extract title from filename {file_name}");
                 reply.error(libc::EINVAL);
                 return;
             }
@@ -1035,7 +1033,10 @@ impl Filesystem for ExampleFuseFs {
             None
         } else {
             let db_parent_path = Self::normalize_path_for_db(&parent_path);
-            match self.db.get_folder_id_by_path(db_parent_path, self.user_id.as_str()) {
+            match self
+                .db
+                .get_folder_id_by_path(db_parent_path, self.user_id.as_str())
+            {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     eprintln!("[ERROR] create: Parent directory {parent_path} not found");
@@ -1095,9 +1096,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.created(&TTL, &attr, 0, inode, 0);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] create: Failed to create note in database for {full_path}: {e}"
-                );
+                eprintln!("[ERROR] create: Failed to create note in database for {full_path}: {e}");
                 reply.error(libc::EIO);
             }
         }
@@ -1144,7 +1143,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&path);
 
         // Check if it's a directory - can't write to directories
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(_folder_id)) => {
                 reply.error(libc::EISDIR);
                 return;
@@ -1153,9 +1155,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] write: Database error checking for folder {path}: {e}"
-                );
+                eprintln!("[ERROR] write: Database error checking for folder {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1168,16 +1168,12 @@ impl Filesystem for ExampleFuseFs {
                 match self.db.get_note_by_id(&note_id) {
                     Ok(Some(note)) => (note_id, note.content),
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] write: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] write: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                         return;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] write: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] write: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                         return;
                     }
@@ -1189,9 +1185,7 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] write: Database error checking for note {path}: {e}"
-                );
+                eprintln!("[ERROR] write: Database error checking for note {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1277,7 +1271,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&path);
 
         // First, check if it's a folder/directory - can't open directories as files
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(_folder_id)) => {
                 // It's a directory - return error since we're trying to open it as a file
                 reply.error(libc::EISDIR);
@@ -1287,9 +1284,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note/file
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] open: Database error checking for folder {path}: {e}"
-                );
+                eprintln!("[ERROR] open: Database error checking for folder {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1307,9 +1302,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] open: Database error checking for note {path}: {e}"
-                );
+                eprintln!("[ERROR] open: Database error checking for note {path}: {e}");
                 reply.error(ENOENT);
             }
         }
@@ -1354,7 +1347,10 @@ impl Filesystem for ExampleFuseFs {
         let db_path = Self::normalize_path_for_db(&path);
 
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(folder_id)) => {
                 // It's a directory - retrieve full folder object for timestamps
                 match self.db.get_folder_by_id(&folder_id, self.user_id.as_str()) {
@@ -1380,7 +1376,9 @@ impl Filesystem for ExampleFuseFs {
                         return;
                     }
                     Ok(None) => {
-                        eprintln!("[ERROR] setattr: Folder ID found but folder object not retrieved: {folder_id}");
+                        eprintln!(
+                            "[ERROR] setattr: Folder ID found but folder object not retrieved: {folder_id}"
+                        );
                         reply.error(ENOENT);
                         return;
                     }
@@ -1395,9 +1393,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note/file
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] setattr: Database error checking for folder {path}: {e}"
-                );
+                eprintln!("[ERROR] setattr: Database error checking for folder {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1410,16 +1406,12 @@ impl Filesystem for ExampleFuseFs {
                 match self.db.get_note_by_id(&note_id) {
                     Ok(Some(note)) => (note_id, note),
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] setattr: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] setattr: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                         return;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] setattr: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] setattr: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                         return;
                     }
@@ -1432,9 +1424,7 @@ impl Filesystem for ExampleFuseFs {
                 return;
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] setattr: Database error checking for note {path}: {e}"
-                );
+                eprintln!("[ERROR] setattr: Database error checking for note {path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1634,7 +1624,10 @@ impl Filesystem for ExampleFuseFs {
             None
         } else {
             let db_new_parent_path = Self::normalize_path_for_db(&new_parent_path);
-            match self.db.get_folder_id_by_path(db_new_parent_path, self.user_id.as_str()) {
+            match self
+                .db
+                .get_folder_id_by_path(db_new_parent_path, self.user_id.as_str())
+            {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
@@ -1647,16 +1640,23 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // First, check if it's a directory being renamed
-        match self.db.get_folder_id_by_path(db_old_path, self.user_id.as_str()) {
+        match self
+            .db
+            .get_folder_id_by_path(db_old_path, self.user_id.as_str())
+        {
             Ok(Some(folder_id)) => {
                 // It's a directory - update both name and parent
-                match self.db.update_folder(&folder_id, new_name, self.user_id.as_str()) {
+                match self
+                    .db
+                    .update_folder(&folder_id, new_name, self.user_id.as_str())
+                {
                     Ok(_success) => {
                         // Also update the parent relationship
-                        match self
-                            .db
-                            .update_folder_parent(&folder_id, new_parent_id.as_deref(), self.user_id.as_str())
-                        {
+                        match self.db.update_folder_parent(
+                            &folder_id,
+                            new_parent_id.as_deref(),
+                            self.user_id.as_str(),
+                        ) {
                             Ok(_success) => {
                                 self.update_inode_mappings(&old_path, &new_path);
                                 reply.ok();
@@ -1680,9 +1680,7 @@ impl Filesystem for ExampleFuseFs {
                 // Not a directory, continue to check if it's a note
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] rename: Database error checking for folder {old_path}: {e}"
-                );
+                eprintln!("[ERROR] rename: Database error checking for folder {old_path}: {e}");
                 reply.error(ENOENT);
                 return;
             }
@@ -1753,15 +1751,11 @@ impl Filesystem for ExampleFuseFs {
                         }
                     }
                     Ok(None) => {
-                        eprintln!(
-                            "[ERROR] rename: Note with id {note_id} not found in database"
-                        );
+                        eprintln!("[ERROR] rename: Note with id {note_id} not found in database");
                         reply.error(ENOENT);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ERROR] rename: Database error retrieving note {note_id}: {e}"
-                        );
+                        eprintln!("[ERROR] rename: Database error retrieving note {note_id}: {e}");
                         reply.error(ENOENT);
                     }
                 }
@@ -1772,9 +1766,7 @@ impl Filesystem for ExampleFuseFs {
                 reply.error(ENOENT);
             }
             Err(e) => {
-                eprintln!(
-                    "[ERROR] rename: Database error checking for note {old_path}: {e}"
-                );
+                eprintln!("[ERROR] rename: Database error checking for note {old_path}: {e}");
                 reply.error(ENOENT);
             }
         }
@@ -1909,7 +1901,10 @@ impl Filesystem for ExampleFuseFs {
             None
         } else {
             let db_parent_path = Self::normalize_path_for_db(&parent_path);
-            match self.db.get_folder_id_by_path(db_parent_path, self.user_id.as_str()) {
+            match self
+                .db
+                .get_folder_id_by_path(db_parent_path, self.user_id.as_str())
+            {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
@@ -2034,7 +2029,10 @@ impl Filesystem for ExampleFuseFs {
 
         // Get the folder ID of the directory being deleted
         let db_path = Self::normalize_path_for_db(&path);
-        let folder_id = match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
+        let folder_id = match self
+            .db
+            .get_folder_id_by_path(db_path, self.user_id.as_str())
+        {
             Ok(Some(id)) => id,
             Ok(None) => {
                 eprintln!("[ERROR] rmdir: Folder {path} not found");
@@ -2049,7 +2047,10 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // NOTE CASCADE on a Foreign Key would be nice here
-        let has_children = match self.db.get_child_count(Some(&folder_id), self.user_id.as_str()) {
+        let has_children = match self
+            .db
+            .get_child_count(Some(&folder_id), self.user_id.as_str())
+        {
             Ok((fc, nc)) => nc + fc > 0,
             Err(e) => {
                 eprintln!("82 [ERROR] (fn rmdir) Unable to get child counts from database");

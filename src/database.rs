@@ -15,7 +15,12 @@ impl Database {
         }
     }
 
-    pub fn create_folder(&self, title: &str, parent_id: Option<&str>, user_id: &str) -> Result<String> {
+    pub fn create_folder(
+        &self,
+        title: &str,
+        parent_id: Option<&str>,
+        user_id: &str,
+    ) -> Result<String> {
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
         let now = Utc::now()
             .with_timezone(&self.timezone)
@@ -57,14 +62,20 @@ impl Database {
     }
 
     pub fn delete_folder(&self, id: &str, user_id: &str) -> Result<bool> {
-        let rows_affected = self
-            .connection
-            .execute("DELETE FROM folders WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
+        let rows_affected = self.connection.execute(
+            "DELETE FROM folders WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )?;
 
         Ok(rows_affected > 0)
     }
 
-    pub fn update_folder_parent(&self, id: &str, parent_id: Option<&str>, user_id: &str) -> Result<bool> {
+    pub fn update_folder_parent(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+        user_id: &str,
+    ) -> Result<bool> {
         let now = Utc::now()
             .with_timezone(&self.timezone)
             .format("%Y-%m-%d %H:%M:%S")
@@ -84,7 +95,11 @@ impl Database {
         Ok(rows_affected > 0)
     }
 
-    pub fn list_folders_by_parent(&self, parent_id: Option<&str>, user_id: &str) -> Result<Vec<Folder>> {
+    pub fn list_folders_by_parent(
+        &self,
+        parent_id: Option<&str>,
+        user_id: &str,
+    ) -> Result<Vec<Folder>> {
         let query = match parent_id {
             Some(_) => {
                 "SELECT id, title, parent_id, user_id, created_at, updated_at FROM folders WHERE parent_id = ?1 AND user_id = ?2 ORDER BY title"
@@ -214,9 +229,9 @@ impl Database {
 
     #[cfg(test)]
     pub fn get_folder_path_by_id(&self, id: &str, user_id: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .connection
-            .prepare("SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1 AND user_id = ?2")?;
+        let mut stmt = self.connection.prepare(
+            "SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1 AND user_id = ?2",
+        )?;
 
         let mut path_iter = stmt.query_map([id, user_id], |row| row.get::<_, String>(0))?;
 
@@ -227,9 +242,9 @@ impl Database {
     }
 
     pub fn get_folder_id_by_path(&self, path: &str, user_id: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .connection
-            .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1 AND user_id = ?2")?;
+        let mut stmt = self.connection.prepare(
+            "SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1 AND user_id = ?2",
+        )?;
 
         let mut id_iter = stmt.query_map([path, user_id], |row| row.get::<_, String>(0))?;
 
@@ -508,7 +523,7 @@ pub enum FileType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use rusqlite::Connection;
 
     fn setup_test_database() -> Database {
