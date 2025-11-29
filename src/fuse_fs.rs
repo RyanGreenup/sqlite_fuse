@@ -37,7 +37,8 @@ impl ExampleFuseFs {
         if path == "/" {
             return true; // Root is always a directory
         }
-        match self.db.get_folder_id_by_path(path) {
+        let db_path = Self::normalize_path_for_db(path);
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(_id) => true,
             Err(_e) => false,
         }
@@ -52,6 +53,23 @@ impl ExampleFuseFs {
             ("/", &path[..])
         };
         return (parent_path.to_string(), filename.to_string());
+    }
+
+    /// Normalize a FUSE path for database queries
+    ///
+    /// The FUSE layer uses paths with leading slashes (e.g., "/1", "/1/2"),
+    /// but the database stores paths without leading slashes (e.g., "1", "1/2").
+    /// This function strips the leading slash for database queries.
+    ///
+    /// Special case: "/" (root) remains as "/" since it has special handling
+    fn normalize_path_for_db(fuse_path: &str) -> &str {
+        if fuse_path == "/" {
+            "/"
+        } else if let Some(stripped) = fuse_path.strip_prefix('/') {
+            stripped
+        } else {
+            fuse_path
+        }
     }
 
     fn get_path_from_inode(&self, inode: u64) -> Option<&String> {
@@ -231,8 +249,11 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{name_str}")
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&full_path);
+
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(&full_path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 // It's a directory
                 let inode = self.get_or_create_inode(&full_path);
@@ -270,7 +291,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Second, check if it's a note/file
-        match self.db.get_note_id_by_path(&full_path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(note_id)) => {
                 // It's a note/file
                 match self.db.get_note_by_id(&note_id) {
@@ -368,8 +389,11 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
+
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(&path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 // It's a directory
                 let attr = FileAttr {
@@ -406,7 +430,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Second, check if it's a note/file
-        match self.db.get_note_id_by_path(&path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(note_id)) => {
                 // It's a note/file, get the note content
                 match self.db.get_note_by_id(&note_id) {
@@ -491,8 +515,11 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
+
         // Check if it's a directory - directories cannot be read as files
-        match self.db.get_folder_id_by_path(&path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 // It's a directory - cannot read as file
                 eprintln!("[ERROR] read: Attempted to read directory {} as file", path);
@@ -513,7 +540,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Check if it's a note/file
-        match self.db.get_note_id_by_path(&path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(note_id)) => {
                 // It's a note/file, get the content
                 match self.db.get_note_by_id(&note_id) {
@@ -588,7 +615,8 @@ impl Filesystem for ExampleFuseFs {
             // Root directory - special case
             None
         } else {
-            match self.db.get_folder_id_by_path(&path) {
+            let db_path = Self::normalize_path_for_db(&path);
+            match self.db.get_folder_id_by_path(db_path, USER_ID) {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     // Not a directory - cannot readdir on a file
@@ -637,7 +665,7 @@ impl Filesystem for ExampleFuseFs {
             // Root directory - get top-level folders and notes
 
             // Get root folders
-            match self.db.list_folders_by_parent(None) {
+            match self.db.list_folders_by_parent(None, USER_ID) {
                 Ok(folders) => {
                     for folder in folders {
                         let name = folder.title.clone();
@@ -680,7 +708,7 @@ impl Filesystem for ExampleFuseFs {
             let current_folder_id = folder_id.unwrap();
 
             // Get direct child folders
-            match self.db.list_folders_by_parent(Some(&current_folder_id)) {
+            match self.db.list_folders_by_parent(Some(&current_folder_id), USER_ID) {
                 Ok(folders) => {
                     for folder in folders {
                         let name = folder.title.clone();
@@ -789,8 +817,11 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{folder_name}")
         };
 
+        // Normalize paths for database queries
+        let db_path = Self::normalize_path_for_db(&full_path);
+
         // Check if directory already exists
-        match self.db.get_folder_id_by_path(&full_path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_existing_id)) => {
                 eprintln!("[ERROR] mkdir: Directory {} already exists", full_path);
                 reply.error(libc::EEXIST);
@@ -810,7 +841,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Check if a file/note with the same name exists
-        match self.db.get_note_id_by_path(&full_path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(_existing_id)) => {
                 eprintln!("[ERROR] mkdir: File {} already exists", full_path);
                 reply.error(libc::EEXIST);
@@ -833,7 +864,8 @@ impl Filesystem for ExampleFuseFs {
         let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
+            let db_parent_path = Self::normalize_path_for_db(&parent_path);
+            match self.db.get_folder_id_by_path(db_parent_path, USER_ID) {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     eprintln!("[ERROR] mkdir: Parent directory {} not found", parent_path);
@@ -852,7 +884,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // Create the folder in the database
-        let _folder_id = match self.db.create_folder(folder_name, parent_id.as_deref()) {
+        let _folder_id = match self.db.create_folder(folder_name, parent_id.as_deref(), USER_ID) {
             Ok(id) => id,
             Err(e) => {
                 eprintln!(
@@ -936,8 +968,11 @@ impl Filesystem for ExampleFuseFs {
             format!("{parent_path}/{file_name}")
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&full_path);
+
         // Check if file already exists
-        match self.db.get_note_id_by_path(&full_path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(_existing_id)) => {
                 eprintln!("[ERROR] create: File {} already exists", full_path);
                 reply.error(libc::EEXIST);
@@ -1017,7 +1052,8 @@ impl Filesystem for ExampleFuseFs {
         let parent_folder_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
+            let db_parent_path = Self::normalize_path_for_db(&parent_path);
+            match self.db.get_folder_id_by_path(db_parent_path, USER_ID) {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     eprintln!("[ERROR] create: Parent directory {} not found", parent_path);
@@ -1125,8 +1161,11 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
+
         // Check if it's a directory - can't write to directories
-        match self.db.get_folder_id_by_path(&path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 reply.error(libc::EISDIR);
                 return;
@@ -1145,7 +1184,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Get the note ID and current content
-        let (note_id, current_content) = match self.db.get_note_id_by_path(&path) {
+        let (note_id, current_content) = match self.db.get_note_id_by_path(db_path) {
             Ok(Some(note_id)) => {
                 // Get the note content
                 match self.db.get_note_by_id(&note_id) {
@@ -1259,8 +1298,11 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
+
         // First, check if it's a folder/directory - can't open directories as files
-        match self.db.get_folder_id_by_path(&path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 // It's a directory - return error since we're trying to open it as a file
                 reply.error(libc::EISDIR);
@@ -1280,7 +1322,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Second, check if it's a note/file
-        match self.db.get_note_id_by_path(&path) {
+        match self.db.get_note_id_by_path(db_path) {
             Ok(Some(_note_id)) => {
                 // It's a valid file - allow opening
                 reply.opened(ino, 0);
@@ -1335,8 +1377,11 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
+
         // First, check if it's a folder/directory
-        match self.db.get_folder_id_by_path(&path) {
+        match self.db.get_folder_id_by_path(db_path, USER_ID) {
             Ok(Some(_folder_id)) => {
                 // It's a directory - return directory attributes
                 let attr = FileAttr {
@@ -1373,7 +1418,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Second, check if it's a note/file and get current content
-        let (note_id, mut note) = match self.db.get_note_id_by_path(&path) {
+        let (note_id, mut note) = match self.db.get_note_id_by_path(db_path) {
             Ok(Some(note_id)) => {
                 // Get the note content
                 match self.db.get_note_by_id(&note_id) {
@@ -1590,11 +1635,15 @@ impl Filesystem for ExampleFuseFs {
             format!("{new_parent_path}/{new_name}")
         };
 
+        // Normalize paths for database queries
+        let db_old_path = Self::normalize_path_for_db(&old_path);
+
         // Get the new parent ID for database operations
         let new_parent_id = if new_parent_path == "/" {
             None
         } else {
-            match self.db.get_folder_id_by_path(&new_parent_path) {
+            let db_new_parent_path = Self::normalize_path_for_db(&new_parent_path);
+            match self.db.get_folder_id_by_path(db_new_parent_path, USER_ID) {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
@@ -1608,15 +1657,15 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // First, check if it's a directory being renamed
-        match self.db.get_folder_id_by_path(&old_path) {
+        match self.db.get_folder_id_by_path(db_old_path, USER_ID) {
             Ok(Some(folder_id)) => {
                 // It's a directory - update both name and parent
-                match self.db.update_folder(&folder_id, new_name) {
+                match self.db.update_folder(&folder_id, new_name, USER_ID) {
                     Ok(_success) => {
                         // Also update the parent relationship
                         match self
                             .db
-                            .update_folder_parent(&folder_id, new_parent_id.as_deref())
+                            .update_folder_parent(&folder_id, new_parent_id.as_deref(), USER_ID)
                         {
                             Ok(_success) => {
                                 self.update_inode_mappings(&old_path, &new_path);
@@ -1651,7 +1700,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Second, check if it's a note/file being renamed
-        match self.db.get_note_id_by_path(&old_path) {
+        match self.db.get_note_id_by_path(db_old_path) {
             Ok(Some(note_id)) => {
                 // It's a note/file - get the note and update it
                 match self.db.get_note_by_id(&note_id) {
@@ -1790,11 +1839,19 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        let path = "{parent_path}/{filename}";
+        // Construct the full path
+        let path = if parent_path == "/" {
+            format!("/{filename}")
+        } else {
+            format!("{parent_path}/{filename}")
+        };
+
+        // Normalize path for database queries
+        let db_path = Self::normalize_path_for_db(&path);
 
         // Get the id
 
-        let id = match self.db.get_note_id_by_path(&path) {
+        let id = match self.db.get_note_id_by_path(db_path) {
             Ok(maybe_id) => match maybe_id {
                 Some(id) => id,
                 None => {
@@ -1870,7 +1927,8 @@ impl Filesystem for ExampleFuseFs {
         let parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
+            let db_parent_path = Self::normalize_path_for_db(&parent_path);
+            match self.db.get_folder_id_by_path(db_parent_path, USER_ID) {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
@@ -1992,7 +2050,8 @@ impl Filesystem for ExampleFuseFs {
         let maybe_parent_id = if parent_path == "/" {
             None
         } else {
-            match self.db.get_folder_id_by_path(&parent_path) {
+            let db_parent_path = Self::normalize_path_for_db(&parent_path);
+            match self.db.get_folder_id_by_path(db_parent_path, USER_ID) {
                 Ok(maybe_id) => maybe_id,
                 Err(e) => {
                     eprintln!(
@@ -2015,7 +2074,7 @@ impl Filesystem for ExampleFuseFs {
         };
 
         // NOTE CASCADE on a Foreign Key would be nice here
-        let has_children = match self.db.get_child_count(Some(&parent_id), Some(USER_ID)) {
+        let has_children = match self.db.get_child_count(Some(&parent_id), USER_ID) {
             Ok((fc, nc)) => nc + fc > 0,
             Err(e) => {
                 eprintln!("82 [ERROR] (fn rmdir) Unable to get child counts from database");
@@ -2031,7 +2090,7 @@ impl Filesystem for ExampleFuseFs {
         }
 
         // Directory is empty, proceed with deletion
-        match self.db.delete_folder(&parent_id) {
+        match self.db.delete_folder(&parent_id, USER_ID) {
             Ok(success) => {
                 if success {
                     // Successfully deleted the directory

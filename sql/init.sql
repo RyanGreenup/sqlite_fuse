@@ -8,10 +8,13 @@ CREATE TABLE folders (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
   title TEXT NOT NULL,
   parent_id TEXT,
+  user_id TEXT NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
 );
+CREATE INDEX idx_folders_user_id ON folders(user_id);
+CREATE INDEX idx_folders_parent_id ON folders(parent_id);
 
 ------------------------------------------------------------
 -- Notes----------------------------------------------------
@@ -152,6 +155,7 @@ WITH RECURSIVE folder_path AS (
         id,
         title,
         parent_id,
+        user_id,
         title AS path
     FROM folders
     WHERE parent_id IS NULL
@@ -163,6 +167,7 @@ WITH RECURSIVE folder_path AS (
         f.id,
         f.title,
         f.parent_id,
+        f.user_id,
         fp.path || '/' || f.title AS path
     FROM folders f
     INNER JOIN folder_path fp ON f.parent_id = fp.id
@@ -171,6 +176,7 @@ SELECT
     id,
     title,
     parent_id,
+    user_id,
     path AS full_path
 FROM folder_path;
 
@@ -181,6 +187,7 @@ WITH RECURSIVE folder_path AS (
         id,
         title,
         parent_id,
+        user_id,
         title AS path
     FROM folders
     WHERE parent_id IS NULL
@@ -192,6 +199,7 @@ WITH RECURSIVE folder_path AS (
         f.id,
         f.title,
         f.parent_id,
+        f.user_id,
         fp.path || '/' || f.title AS path
     FROM folders f
     INNER JOIN folder_path fp ON f.parent_id = fp.id
@@ -200,6 +208,7 @@ SELECT
     n.id,
     n.title,
     n.syntax,
+    n.user_id,
     CASE
         WHEN n.parent_id IS NULL THEN n.title || '.' || n.syntax
         ELSE fp.path || '/' || n.title || '.' || n.syntax

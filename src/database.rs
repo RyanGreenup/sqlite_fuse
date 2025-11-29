@@ -18,7 +18,7 @@ impl Database {
     pub fn with_utc(connection: Connection) -> Self {
         Self::new(connection, None)
     }
-    pub fn create_folder(&self, title: &str, parent_id: Option<&str>) -> Result<String> {
+    pub fn create_folder(&self, title: &str, parent_id: Option<&str>, user_id: &str) -> Result<String> {
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
         let now = Utc::now()
             .with_timezone(&self.timezone)
@@ -26,49 +26,19 @@ impl Database {
             .to_string();
 
         self.connection.execute(
-            "INSERT INTO folders (id, title, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![id, title, parent_id, now],
+            "INSERT INTO folders (id, title, parent_id, user_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![id, title, parent_id, user_id, now],
         )?;
 
         Ok(id)
     }
 
-    pub fn get_folder_by_id(&self, id: &str) -> Result<Option<Folder>> {
+    pub fn get_folder_by_id(&self, id: &str, user_id: &str) -> Result<Option<Folder>> {
         let mut stmt = self.connection.prepare(
-            "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE id = ?1",
+            "SELECT id, title, parent_id, user_id, created_at, updated_at FROM folders WHERE id = ?1 AND user_id = ?2",
         )?;
 
-        let mut folder_iter = stmt.query_map([id], |row| {
-            Ok(Folder {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                parent_id: row.get(2)?,
-                created_at: NaiveDateTime::parse_from_str(
-                    &row.get::<_, String>(3)?,
-                    "%Y-%m-%d %H:%M:%S",
-                )
-                .map_err(|_| {
-                    rusqlite::Error::InvalidColumnType(
-                        3,
-                        "created_at".to_string(),
-                        rusqlite::types::Type::Text,
-                    )
-                })?
-                .and_utc(),
-                updated_at: NaiveDateTime::parse_from_str(
-                    &row.get::<_, String>(4)?,
-                    "%Y-%m-%d %H:%M:%S",
-                )
-                .map_err(|_| {
-                    rusqlite::Error::InvalidColumnType(
-                        4,
-                        "updated_at".to_string(),
-                        rusqlite::types::Type::Text,
-                    )
-                })?
-                .and_utc(),
-            })
-        })?;
+        let mut folder_iter = stmt.query_map([id, user_id], Self::map_folder_row)?;
 
         match folder_iter.next() {
             Some(folder) => Ok(Some(folder?)),
@@ -76,28 +46,28 @@ impl Database {
         }
     }
 
-    pub fn update_folder(&self, id: &str, title: &str) -> Result<bool> {
+    pub fn update_folder(&self, id: &str, title: &str, user_id: &str) -> Result<bool> {
         let now = Utc::now()
             .with_timezone(&self.timezone)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         let rows_affected = self.connection.execute(
-            "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title, now, id],
+            "UPDATE folders SET title = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+            params![title, now, id, user_id],
         )?;
 
         Ok(rows_affected > 0)
     }
 
-    pub fn delete_folder(&self, id: &str) -> Result<bool> {
+    pub fn delete_folder(&self, id: &str, user_id: &str) -> Result<bool> {
         let rows_affected = self
             .connection
-            .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+            .execute("DELETE FROM folders WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
 
         Ok(rows_affected > 0)
     }
 
-    pub fn update_folder_parent(&self, id: &str, parent_id: Option<&str>) -> Result<bool> {
+    pub fn update_folder_parent(&self, id: &str, parent_id: Option<&str>, user_id: &str) -> Result<bool> {
         let now = Utc::now()
             .with_timezone(&self.timezone)
             .format("%Y-%m-%d %H:%M:%S")
@@ -105,32 +75,32 @@ impl Database {
 
         let rows_affected = match parent_id {
             Some(pid) => self.connection.execute(
-                "UPDATE folders SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
-                params![pid, now, id],
+                "UPDATE folders SET parent_id = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+                params![pid, now, id, user_id],
             )?,
             None => self.connection.execute(
-                "UPDATE folders SET parent_id = NULL, updated_at = ?1 WHERE id = ?2",
-                params![now, id],
+                "UPDATE folders SET parent_id = NULL, updated_at = ?1 WHERE id = ?2 AND user_id = ?3",
+                params![now, id, user_id],
             )?,
         };
 
         Ok(rows_affected > 0)
     }
 
-    pub fn list_folders_by_parent(&self, parent_id: Option<&str>) -> Result<Vec<Folder>> {
+    pub fn list_folders_by_parent(&self, parent_id: Option<&str>, user_id: &str) -> Result<Vec<Folder>> {
         let query = match parent_id {
             Some(_) => {
-                "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id = ?1 ORDER BY title"
+                "SELECT id, title, parent_id, user_id, created_at, updated_at FROM folders WHERE parent_id = ?1 AND user_id = ?2 ORDER BY title"
             }
             None => {
-                "SELECT id, title, parent_id, created_at, updated_at FROM folders WHERE parent_id IS NULL ORDER BY title"
+                "SELECT id, title, parent_id, user_id, created_at, updated_at FROM folders WHERE parent_id IS NULL AND user_id = ?1 ORDER BY title"
             }
         };
 
         let mut stmt = self.connection.prepare(query)?;
         let folder_iter = match parent_id {
-            Some(pid) => stmt.query_map([pid], Self::map_folder_row)?,
-            None => stmt.query_map([], Self::map_folder_row)?,
+            Some(pid) => stmt.query_map(params![pid, user_id], Self::map_folder_row)?,
+            None => stmt.query_map([user_id], Self::map_folder_row)?,
         };
 
         folder_iter.collect()
@@ -239,12 +209,12 @@ impl Database {
         note_iter.collect()
     }
 
-    pub fn get_folder_path_by_id(&self, id: &str) -> Result<Option<String>> {
+    pub fn get_folder_path_by_id(&self, id: &str, user_id: &str) -> Result<Option<String>> {
         let mut stmt = self
             .connection
-            .prepare("SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1")?;
+            .prepare("SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1 AND user_id = ?2")?;
 
-        let mut path_iter = stmt.query_map([id], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut path_iter = stmt.query_map([id, user_id], |row| Ok(row.get::<_, String>(0)?))?;
 
         match path_iter.next() {
             Some(path) => Ok(Some(path?)),
@@ -252,12 +222,12 @@ impl Database {
         }
     }
 
-    pub fn get_folder_id_by_path(&self, path: &str) -> Result<Option<String>> {
+    pub fn get_folder_id_by_path(&self, path: &str, user_id: &str) -> Result<Option<String>> {
         let mut stmt = self
             .connection
-            .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1")?;
+            .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1 AND user_id = ?2")?;
 
-        let mut id_iter = stmt.query_map([path], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut id_iter = stmt.query_map([path, user_id], |row| Ok(row.get::<_, String>(0)?))?;
 
         match id_iter.next() {
             Some(id) => Ok(Some(id?)),
@@ -299,29 +269,30 @@ impl Database {
         let query = "
             WITH RECURSIVE folder_tree AS (
                 -- Base case: the specified folder
-                SELECT 
+                SELECT
                     id,
                     title,
                     parent_id,
                     0 as depth,
                     title as path
                 FROM folders
-                WHERE id = ?1
-                
+                WHERE id = ?1 AND user_id = ?2
+
                 UNION ALL
-                
+
                 -- Recursive case: child folders
-                SELECT 
+                SELECT
                     f.id,
                     f.title,
                     f.parent_id,
                     ft.depth + 1 as depth,
-                    CASE 
+                    CASE
                         WHEN ft.depth = 0 THEN f.title
                         ELSE ft.path || '/' || f.title
                     END as path
                 FROM folders f
                 INNER JOIN folder_tree ft ON f.parent_id = ft.id
+                WHERE f.user_id = ?2
             ),
             folder_paths AS (
                 SELECT 
@@ -370,54 +341,40 @@ impl Database {
     pub fn get_child_count(
         &self,
         parent_id: Option<&str>,
-        user_id: Option<&str>,
+        user_id: &str,
     ) -> Result<(usize, usize)> {
         let (folder_count, note_count) = match parent_id {
             Some(pid) => {
-                // Count folders with this parent
+                // Count folders with this parent (filtered by user)
                 let folder_count: i64 = self.connection.query_row(
-                    "SELECT COUNT(*) FROM folders WHERE parent_id = ?1",
-                    [pid],
+                    "SELECT COUNT(*) FROM folders WHERE parent_id = ?1 AND user_id = ?2",
+                    params![pid, user_id],
                     |row| row.get(0),
                 )?;
 
-                // Count notes with this parent (optionally filtered by user)
-                let note_count: i64 = match user_id {
-                    Some(uid) => self.connection.query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1 AND user_id = ?2",
-                        params![pid, uid],
-                        |row| row.get(0),
-                    )?,
-                    None => self.connection.query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id = ?1",
-                        [pid],
-                        |row| row.get(0),
-                    )?,
-                };
+                // Count notes with this parent (filtered by user)
+                let note_count: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM notes WHERE parent_id = ?1 AND user_id = ?2",
+                    params![pid, user_id],
+                    |row| row.get(0),
+                )?;
 
                 (folder_count, note_count)
             }
             None => {
-                // Count root folders (no parent)
+                // Count root folders (no parent, filtered by user)
                 let folder_count: i64 = self.connection.query_row(
-                    "SELECT COUNT(*) FROM folders WHERE parent_id IS NULL",
-                    [],
+                    "SELECT COUNT(*) FROM folders WHERE parent_id IS NULL AND user_id = ?1",
+                    [user_id],
                     |row| row.get(0),
                 )?;
 
-                // Count root notes (optionally filtered by user)
-                let note_count: i64 = match user_id {
-                    Some(uid) => self.connection.query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL AND user_id = ?1",
-                        [uid],
-                        |row| row.get(0),
-                    )?,
-                    None => self.connection.query_row(
-                        "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL",
-                        [],
-                        |row| row.get(0),
-                    )?,
-                };
+                // Count root notes (filtered by user)
+                let note_count: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM notes WHERE parent_id IS NULL AND user_id = ?1",
+                    [user_id],
+                    |row| row.get(0),
+                )?;
 
                 (folder_count, note_count)
             }
@@ -428,30 +385,32 @@ impl Database {
 
     /// Maps a database row to a Folder struct, handling datetime parsing.
     /// Extracted as a helper to avoid code duplication across query methods.
+    /// Expects columns: id, title, parent_id, user_id, created_at, updated_at
     fn map_folder_row(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
         Ok(Folder {
             id: row.get(0)?,
             title: row.get(1)?,
             parent_id: row.get(2)?,
+            user_id: row.get(3)?,
             created_at: NaiveDateTime::parse_from_str(
-                &row.get::<_, String>(3)?,
-                "%Y-%m-%d %H:%M:%S",
-            )
-            .map_err(|_| {
-                rusqlite::Error::InvalidColumnType(
-                    3,
-                    "created_at".to_string(),
-                    rusqlite::types::Type::Text,
-                )
-            })?
-            .and_utc(),
-            updated_at: NaiveDateTime::parse_from_str(
                 &row.get::<_, String>(4)?,
                 "%Y-%m-%d %H:%M:%S",
             )
             .map_err(|_| {
                 rusqlite::Error::InvalidColumnType(
                     4,
+                    "created_at".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })?
+            .and_utc(),
+            updated_at: NaiveDateTime::parse_from_str(
+                &row.get::<_, String>(5)?,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    5,
                     "updated_at".to_string(),
                     rusqlite::types::Type::Text,
                 )
@@ -504,6 +463,7 @@ pub struct Folder {
     pub id: String,
     pub title: String,
     pub parent_id: Option<String>,
+    pub user_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -547,23 +507,24 @@ mod tests {
     #[test]
     fn test_folder_crud_operations() {
         let db = setup_test_database();
+        let user_id = "test_user";
 
         // Create root folder
         let root_id = db
-            .create_folder("Documents", None)
+            .create_folder("Documents", None, user_id)
             .expect("Failed to create root folder");
         assert!(!root_id.is_empty());
 
         // Create child folder
         let child_id = db
-            .create_folder("Projects", Some(&root_id))
+            .create_folder("Projects", Some(&root_id), user_id)
             .expect("Failed to create child folder");
         assert!(!child_id.is_empty());
         assert_ne!(root_id, child_id);
 
         // Read back the root folder
         let folder = db
-            .get_folder_by_id(&root_id)
+            .get_folder_by_id(&root_id, user_id)
             .expect("Failed to query folder")
             .expect("Root folder not found");
 
@@ -575,7 +536,7 @@ mod tests {
 
         // Read back the child folder
         let child_folder = db
-            .get_folder_by_id(&child_id)
+            .get_folder_by_id(&child_id, user_id)
             .expect("Failed to query child folder")
             .expect("Child folder not found");
 
@@ -585,31 +546,31 @@ mod tests {
 
         // Test update
         let updated = db
-            .update_folder(&root_id, "My Documents")
+            .update_folder(&root_id, "My Documents", user_id)
             .expect("Failed to update folder");
         assert!(updated);
 
         let updated_folder = db
-            .get_folder_by_id(&root_id)
+            .get_folder_by_id(&root_id, user_id)
             .expect("Failed to query updated folder")
             .expect("Updated folder not found");
         assert_eq!(updated_folder.title, "My Documents");
 
         // Test list folders by parent
         let children = db
-            .list_folders_by_parent(Some(&root_id))
+            .list_folders_by_parent(Some(&root_id), user_id)
             .expect("Failed to list child folders");
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].title, "Projects");
 
         // Test delete
         let deleted = db
-            .delete_folder(&child_id)
+            .delete_folder(&child_id, user_id)
             .expect("Failed to delete folder");
         assert!(deleted);
 
         let deleted_folder = db
-            .get_folder_by_id(&child_id)
+            .get_folder_by_id(&child_id, user_id)
             .expect("Failed to query deleted folder");
         assert!(deleted_folder.is_none());
     }
@@ -617,13 +578,14 @@ mod tests {
     #[test]
     fn test_timezone_functionality() {
         let db = setup_test_database();
+        let user_id = "test_user";
 
         let folder_id = db
-            .create_folder("Test Timezone", None)
+            .create_folder("Test Timezone", None, user_id)
             .expect("Failed to create folder for timezone test");
 
         let folder = db
-            .get_folder_by_id(&folder_id)
+            .get_folder_by_id(&folder_id, user_id)
             .expect("Failed to query folder")
             .expect("Folder not found");
 
@@ -701,7 +663,7 @@ mod tests {
 
         // Create note with parent folder
         let folder_id = db
-            .create_folder("Notes Folder", None)
+            .create_folder("Notes Folder", None, user_id)
             .expect("Failed to create folder");
 
         let note_id2 = db
@@ -804,10 +766,10 @@ mod tests {
 
         // Create folders
         let folder1_id = db
-            .create_folder("Folder 1", None)
+            .create_folder("Folder 1", None, user_id)
             .expect("Failed to create folder 1");
         let folder2_id = db
-            .create_folder("Folder 2", None)
+            .create_folder("Folder 2", None, user_id)
             .expect("Failed to create folder 2");
 
         // Move note to folder 1
@@ -911,7 +873,7 @@ mod tests {
 
         // Create folder
         let folder_id = db
-            .create_folder("Test Folder", None)
+            .create_folder("Test Folder", None, user_id)
             .expect("Failed to create folder");
 
         // Create notes in folder
@@ -980,7 +942,7 @@ mod tests {
 
         // Test listing notes for user with no notes in folder
         let empty_folder_id = db
-            .create_folder("Empty Folder", None)
+            .create_folder("Empty Folder", None, user_id)
             .expect("Failed to create empty folder");
         let empty_notes = db
             .list_notes_by_parent(Some(&empty_folder_id), user_id)
@@ -1057,64 +1019,65 @@ mod tests {
     #[test]
     fn test_folder_path_resolution() {
         let db = setup_test_database();
+        let user_id = "test_user";
 
         // Create nested folder structure: Documents/Projects/MyProject
         let docs_id = db
-            .create_folder("Documents", None)
+            .create_folder("Documents", None, user_id)
             .expect("Failed to create Documents folder");
         let projects_id = db
-            .create_folder("Projects", Some(&docs_id))
+            .create_folder("Projects", Some(&docs_id), user_id)
             .expect("Failed to create Projects folder");
         let myproject_id = db
-            .create_folder("MyProject", Some(&projects_id))
+            .create_folder("MyProject", Some(&projects_id), user_id)
             .expect("Failed to create MyProject folder");
 
         // Test getting paths by ID
         let docs_path = db
-            .get_folder_path_by_id(&docs_id)
+            .get_folder_path_by_id(&docs_id, user_id)
             .expect("Failed to get Documents path")
             .expect("Documents path should exist");
         assert_eq!(docs_path, "Documents");
 
         let projects_path = db
-            .get_folder_path_by_id(&projects_id)
+            .get_folder_path_by_id(&projects_id, user_id)
             .expect("Failed to get Projects path")
             .expect("Projects path should exist");
         assert_eq!(projects_path, "Documents/Projects");
 
         let myproject_path = db
-            .get_folder_path_by_id(&myproject_id)
+            .get_folder_path_by_id(&myproject_id, user_id)
             .expect("Failed to get MyProject path")
             .expect("MyProject path should exist");
         assert_eq!(myproject_path, "Documents/Projects/MyProject");
 
         // Test getting IDs by path
         let docs_id_resolved = db
-            .get_folder_id_by_path("Documents")
+            .get_folder_id_by_path("Documents", user_id)
             .expect("Failed to resolve Documents ID")
             .expect("Documents ID should exist");
         assert_eq!(docs_id_resolved, docs_id);
 
         let projects_id_resolved = db
-            .get_folder_id_by_path("Documents/Projects")
+            .get_folder_id_by_path("Documents/Projects", user_id)
             .expect("Failed to resolve Projects ID")
             .expect("Projects ID should exist");
         assert_eq!(projects_id_resolved, projects_id);
 
         let myproject_id_resolved = db
-            .get_folder_id_by_path("Documents/Projects/MyProject")
+            .get_folder_id_by_path("Documents/Projects/MyProject", user_id)
             .expect("Failed to resolve MyProject ID")
             .expect("MyProject ID should exist");
         assert_eq!(myproject_id_resolved, myproject_id);
 
         // Test non-existent paths/IDs
         let non_existent_path = db
-            .get_folder_path_by_id("non_existent_id")
+            .get_folder_path_by_id("non_existent_id", user_id)
             .expect("Failed to query non-existent folder path");
         assert!(non_existent_path.is_none());
 
         let non_existent_id = db
-            .get_folder_id_by_path("Non/Existent/Path")
+            .get_folder_id_by_path("Non/Existent/Path", user_id)
             .expect("Failed to query non-existent folder ID");
         assert!(non_existent_id.is_none());
     }
@@ -1126,10 +1089,10 @@ mod tests {
 
         // Create folder structure and notes
         let work_id = db
-            .create_folder("Work", None)
+            .create_folder("Work", None, user_id)
             .expect("Failed to create Work folder");
         let projects_id = db
-            .create_folder("Projects", Some(&work_id))
+            .create_folder("Projects", Some(&work_id), user_id)
             .expect("Failed to create Projects folder");
 
         // Create notes at different levels
@@ -1226,17 +1189,17 @@ mod tests {
 
         // Test folder with special characters in name
         let special_id = db
-            .create_folder("Folder-With_Special.Chars", None)
+            .create_folder("Folder-With_Special.Chars", None, user_id)
             .expect("Failed to create folder with special chars");
 
         let special_path = db
-            .get_folder_path_by_id(&special_id)
+            .get_folder_path_by_id(&special_id, user_id)
             .expect("Failed to get special folder path")
             .expect("Special folder path should exist");
         assert_eq!(special_path, "Folder-With_Special.Chars");
 
         let special_id_resolved = db
-            .get_folder_id_by_path("Folder-With_Special.Chars")
+            .get_folder_id_by_path("Folder-With_Special.Chars", user_id)
             .expect("Failed to resolve special folder ID")
             .expect("Special folder ID should exist");
         assert_eq!(special_id_resolved, special_id);
@@ -1273,7 +1236,7 @@ mod tests {
         for i in 1..=5 {
             let folder_name = format!("Level{}", i);
             let folder_id = db
-                .create_folder(&folder_name, current_parent.as_deref())
+                .create_folder(&folder_name, current_parent.as_deref(), user_id)
                 .expect("Failed to create nested folder");
 
             if expected_path.is_empty() {
@@ -1283,7 +1246,7 @@ mod tests {
             }
 
             let resolved_path = db
-                .get_folder_path_by_id(&folder_id)
+                .get_folder_path_by_id(&folder_id, user_id)
                 .expect("Failed to get nested folder path")
                 .expect("Nested folder path should exist");
             assert_eq!(resolved_path, expected_path);
@@ -1329,19 +1292,19 @@ mod tests {
         //   └── readme.md
 
         let root_id = db
-            .create_folder("Root", None)
+            .create_folder("Root", None, user_id)
             .expect("Failed to create Root folder");
         let docs_id = db
-            .create_folder("Documents", Some(&root_id))
+            .create_folder("Documents", Some(&root_id), user_id)
             .expect("Failed to create Documents folder");
         let projects_id = db
-            .create_folder("Projects", Some(&docs_id))
+            .create_folder("Projects", Some(&docs_id), user_id)
             .expect("Failed to create Projects folder");
         let subprojects_id = db
-            .create_folder("SubProjects", Some(&projects_id))
+            .create_folder("SubProjects", Some(&projects_id), user_id)
             .expect("Failed to create SubProjects folder");
         let work_id = db
-            .create_folder("Work", Some(&root_id))
+            .create_folder("Work", Some(&root_id), user_id)
             .expect("Failed to create Work folder");
 
         // Create notes
@@ -1473,7 +1436,7 @@ mod tests {
 
         // Create empty folder
         let empty_id = db
-            .create_folder("Empty", None)
+            .create_folder("Empty", None, user_id)
             .expect("Failed to create empty folder");
 
         let contents = db
@@ -1489,19 +1452,22 @@ mod tests {
         let user1 = "user1";
         let user2 = "user2";
 
-        // Create folder structure
-        let shared_folder_id = db
-            .create_folder("Shared", None)
-            .expect("Failed to create shared folder");
+        // Create separate folder structures for each user (folders are now user-specific)
+        let user1_folder_id = db
+            .create_folder("User1Folder", None, user1)
+            .expect("Failed to create user1 folder");
+        let user2_folder_id = db
+            .create_folder("User2Folder", None, user2)
+            .expect("Failed to create user2 folder");
 
-        // Create notes for different users in same folder
+        // Create notes for each user in their own folders
         db.create_note(
             "note1",
             "note1",
             None,
             "User 1 content",
             "md",
-            Some(&shared_folder_id),
+            Some(&user1_folder_id),
             user1,
         )
         .expect("Failed to create user1 note");
@@ -1511,28 +1477,37 @@ mod tests {
             None,
             "User 2 content",
             "md",
-            Some(&shared_folder_id),
+            Some(&user2_folder_id),
             user2,
         )
         .expect("Failed to create user2 note");
 
-        // Test that each user only sees their own notes
+        // Test that each user only sees contents of their own folders
         let user1_contents = db
-            .get_folder_contents_recursive(&shared_folder_id, user1)
+            .get_folder_contents_recursive(&user1_folder_id, user1)
             .expect("Failed to get user1 contents");
+
+        // User2 cannot access user1's folder (folders are user-specific)
+        let user2_accessing_user1_folder = db
+            .get_folder_contents_recursive(&user1_folder_id, user2)
+            .expect("Failed to get user2 attempting user1 folder");
+
         let user2_contents = db
-            .get_folder_contents_recursive(&shared_folder_id, user2)
+            .get_folder_contents_recursive(&user2_folder_id, user2)
             .expect("Failed to get user2 contents");
 
+        // User1 sees their own note
         assert_eq!(user1_contents.len(), 1);
-        assert_eq!(user2_contents.len(), 1);
-
-        // Check that user1 sees note1.md and user2 sees note2.md
         match &user1_contents[0] {
             FileType::File { path } => assert_eq!(path, "note1.md"),
             _ => panic!("Expected file, got directory"),
         }
 
+        // User2 cannot see user1's folder contents (folder ownership check prevents it)
+        assert_eq!(user2_accessing_user1_folder.len(), 0);
+
+        // User2 sees their own note in their own folder
+        assert_eq!(user2_contents.len(), 1);
         match &user2_contents[0] {
             FileType::File { path } => assert_eq!(path, "note2.md"),
             _ => panic!("Expected file, got directory"),
@@ -1546,10 +1521,10 @@ mod tests {
 
         // Create folder with only direct children
         let folder_id = db
-            .create_folder("SingleLevel", None)
+            .create_folder("SingleLevel", None, user_id)
             .expect("Failed to create folder");
         let child_folder_id = db
-            .create_folder("ChildFolder", Some(&folder_id))
+            .create_folder("ChildFolder", Some(&folder_id), user_id)
             .expect("Failed to create child folder");
 
         db.create_note(
@@ -1600,13 +1575,13 @@ mod tests {
 
         // Create folder structure
         let parent_folder_id = db
-            .create_folder("Parent", None)
+            .create_folder("Parent", None, user_id)
             .expect("Failed to create parent folder");
         let child_folder1_id = db
-            .create_folder("Child1", Some(&parent_folder_id))
+            .create_folder("Child1", Some(&parent_folder_id), user_id)
             .expect("Failed to create child folder 1");
         let child_folder2_id = db
-            .create_folder("Child2", Some(&parent_folder_id))
+            .create_folder("Child2", Some(&parent_folder_id), user_id)
             .expect("Failed to create child folder 2");
 
         // Create notes in parent folder for different users
@@ -1657,48 +1632,34 @@ mod tests {
 
         // Test counting children of parent folder with specific user
         let (folder_count, note_count) = db
-            .get_child_count(Some(&parent_folder_id), Some(user_id))
+            .get_child_count(Some(&parent_folder_id), user_id)
             .expect("Failed to get child count for specific user");
         assert_eq!(folder_count, 2); // Child1, Child2
         assert_eq!(note_count, 2); // note1, note2 (only for user_id)
 
         // Test counting children of parent folder with other user
         let (folder_count, note_count) = db
-            .get_child_count(Some(&parent_folder_id), Some(other_user))
+            .get_child_count(Some(&parent_folder_id), other_user)
             .expect("Failed to get child count for other user");
-        assert_eq!(folder_count, 2); // Child1, Child2 (folders are shared)
+        assert_eq!(folder_count, 0); // Child1, Child2 are owned by user_id, not visible to other_user
         assert_eq!(note_count, 1); // note3 (only for other_user)
-
-        // Test counting children of parent folder without user filter
-        let (folder_count, note_count) = db
-            .get_child_count(Some(&parent_folder_id), None)
-            .expect("Failed to get child count without user filter");
-        assert_eq!(folder_count, 2); // Child1, Child2
-        assert_eq!(note_count, 3); // note1, note2, note3 (all notes)
 
         // Test counting children of empty folder
         let empty_folder_id = db
-            .create_folder("Empty", None)
+            .create_folder("Empty", None, user_id)
             .expect("Failed to create empty folder");
         let (folder_count, note_count) = db
-            .get_child_count(Some(&empty_folder_id), Some(user_id))
+            .get_child_count(Some(&empty_folder_id), user_id)
             .expect("Failed to get empty folder child count");
         assert_eq!(folder_count, 0);
         assert_eq!(note_count, 0);
 
         // Test counting root level items with specific user
         let (folder_count, note_count) = db
-            .get_child_count(None, Some(user_id))
+            .get_child_count(None, user_id)
             .expect("Failed to get root count for specific user");
-        assert_eq!(folder_count, 2); // Parent, Empty (folders are not user-specific)
+        assert_eq!(folder_count, 2); // Parent, Empty (both owned by user_id)
         assert_eq!(note_count, 1); // root1 (only for user_id)
-
-        // Test counting root level items without user filter
-        let (folder_count, note_count) = db
-            .get_child_count(None, None)
-            .expect("Failed to get root count without user filter");
-        assert_eq!(folder_count, 2); // Parent, Empty
-        assert_eq!(note_count, 2); // root1, root2 (all root notes)
     }
 
     #[test]
@@ -1708,14 +1669,14 @@ mod tests {
 
         // Test with non-existent folder ID
         let (folder_count, note_count) = db
-            .get_child_count(Some("non_existent_id"), Some(user_id))
+            .get_child_count(Some("non_existent_id"), user_id)
             .expect("Failed to get count for non-existent folder");
         assert_eq!(folder_count, 0);
         assert_eq!(note_count, 0);
 
         // Test with non-existent user ID
         let folder_id = db
-            .create_folder("Test", None)
+            .create_folder("Test", None, user_id)
             .expect("Failed to create test folder");
         db.create_note(
             "test_note",
@@ -1729,7 +1690,7 @@ mod tests {
         .expect("Failed to create test note");
 
         let (folder_count, note_count) = db
-            .get_child_count(Some(&folder_id), Some("non_existent_user"))
+            .get_child_count(Some(&folder_id), "non_existent_user")
             .expect("Failed to get count for non-existent user");
         assert_eq!(folder_count, 0); // No child folders created yet
         assert_eq!(note_count, 0); // No notes for this user
@@ -1738,14 +1699,14 @@ mod tests {
         let mut current_parent = Some(folder_id.clone());
         for i in 1..=3 {
             let child_id = db
-                .create_folder(&format!("Level{}", i), current_parent.as_deref())
+                .create_folder(&format!("Level{}", i), current_parent.as_deref(), user_id)
                 .expect("Failed to create nested folder");
             current_parent = Some(child_id);
         }
 
         // The original folder should have 1 child (Level1)
         let (folder_count, note_count) = db
-            .get_child_count(Some(&folder_id), Some(user_id))
+            .get_child_count(Some(&folder_id), user_id)
             .expect("Failed to get count for nested structure");
         assert_eq!(folder_count, 1); // Level1
         assert_eq!(note_count, 1); // test_note
