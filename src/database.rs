@@ -109,10 +109,7 @@ impl Database {
     pub fn create_note(
         &self,
         id: &str,
-        title: &str,
-        abstract_text: Option<&str>,
-        content: &str,
-        syntax: &str,
+        note_content: NoteContent,
         parent_id: Option<&str>,
         user_id: &str,
     ) -> Result<String> {
@@ -124,7 +121,16 @@ impl Database {
         self.connection.execute(
             "INSERT INTO notes (id, title, abstract, content, syntax, parent_id, user_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-            params![id, title, abstract_text, content, syntax, parent_id, user_id, now],
+            params![
+                id,
+                note_content.title,
+                note_content.abstract_text,
+                note_content.content,
+                note_content.syntax,
+                parent_id,
+                user_id,
+                now
+            ],
         )?;
 
         Ok(id.to_string())
@@ -458,6 +464,15 @@ impl Database {
     }
 }
 
+/// Content fields for a note that are frequently updated together
+#[derive(Debug, Clone)]
+pub struct NoteContent<'a> {
+    pub title: &'a str,
+    pub abstract_text: Option<&'a str>,
+    pub content: &'a str,
+    pub syntax: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct Folder {
     pub id: String,
@@ -639,10 +654,12 @@ mod tests {
         let note_id = db
             .create_note(
                 "note_1",
-                "My First Note",
-                Some("An abstract"),
-                "# Hello World",
-                "md",
+                NoteContent {
+                    title: "My First Note",
+                    abstract_text: Some("An abstract"),
+                    content: "# Hello World",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -669,10 +686,12 @@ mod tests {
         let note_id2 = db
             .create_note(
                 "note_2",
-                "Second Note",
-                None,
-                "Some content",
-                "txt",
+                NoteContent {
+                    title: "Second Note",
+                    abstract_text: None,
+                    content: "Some content",
+                    syntax: "txt",
+                },
                 Some(&folder_id),
                 user_id,
             )
@@ -696,10 +715,12 @@ mod tests {
         let note_id = db
             .create_note(
                 "update_test",
-                "Original Title",
-                Some("Original abstract"),
-                "Original content",
-                "md",
+                NoteContent {
+                    title: "Original Title",
+                    abstract_text: Some("Original abstract"),
+                    content: "Original content",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -755,10 +776,12 @@ mod tests {
         let note_id = db
             .create_note(
                 "parent_test",
-                "Test Note",
-                None,
-                "Content",
-                "md",
+                NoteContent {
+                    title: "Test Note",
+                    abstract_text: None,
+                    content: "Content",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -823,10 +846,12 @@ mod tests {
         let note_id = db
             .create_note(
                 "delete_test",
-                "Delete Me",
-                Some("Abstract"),
-                "Content to delete",
-                "md",
+                NoteContent {
+                    title: "Delete Me",
+                    abstract_text: Some("Abstract"),
+                    content: "Content to delete",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -879,20 +904,24 @@ mod tests {
         // Create notes in folder
         db.create_note(
             "note1",
-            "Note 1",
-            None,
-            "Content 1",
-            "md",
+            NoteContent {
+                title: "Note 1",
+                abstract_text: None,
+                content: "Content 1",
+                syntax: "md",
+            },
             Some(&folder_id),
             user_id,
         )
         .expect("Failed to create note 1");
         db.create_note(
             "note2",
-            "Note 2",
-            None,
-            "Content 2",
-            "txt",
+            NoteContent {
+                title: "Note 2",
+                abstract_text: None,
+                content: "Content 2",
+                syntax: "txt",
+            },
             Some(&folder_id),
             user_id,
         )
@@ -901,10 +930,12 @@ mod tests {
         // Create note at root level
         db.create_note(
             "note3",
-            "Root Note",
-            None,
-            "Root content",
-            "md",
+            NoteContent {
+                title: "Root Note",
+                abstract_text: None,
+                content: "Root content",
+                syntax: "md",
+            },
             None,
             user_id,
         )
@@ -913,10 +944,12 @@ mod tests {
         // Create note for different user in same folder
         db.create_note(
             "note4",
-            "Other User",
-            None,
-            "Content",
-            "md",
+            NoteContent {
+                title: "Other User",
+                abstract_text: None,
+                content: "Content",
+                syntax: "md",
+            },
             Some(&folder_id),
             "other_user",
         )
@@ -959,10 +992,12 @@ mod tests {
         let note_id = db
             .create_note(
                 "fts_test",
-                "Searchable Note",
-                Some("This is searchable"),
-                "Content with keywords",
-                "md",
+                NoteContent {
+                    title: "Searchable Note",
+                    abstract_text: Some("This is searchable"),
+                    content: "Content with keywords",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -1099,10 +1134,12 @@ mod tests {
         let root_note_id = db
             .create_note(
                 "root_note",
-                "README",
-                None,
-                "Root readme content",
-                "md",
+                NoteContent {
+                    title: "README",
+                    abstract_text: None,
+                    content: "Root readme content",
+                    syntax: "md",
+                },
                 None,
                 user_id,
             )
@@ -1111,10 +1148,12 @@ mod tests {
         let work_note_id = db
             .create_note(
                 "work_note",
-                "agenda",
-                None,
-                "Work agenda",
-                "org",
+                NoteContent {
+                    title: "agenda",
+                    abstract_text: None,
+                    content: "Work agenda",
+                    syntax: "org",
+                },
                 Some(&work_id),
                 user_id,
             )
@@ -1123,10 +1162,12 @@ mod tests {
         let project_note_id = db
             .create_note(
                 "project_note",
-                "specification",
-                None,
-                "Project spec",
-                "txt",
+                NoteContent {
+                    title: "specification",
+                    abstract_text: None,
+                    content: "Project spec",
+                    syntax: "txt",
+                },
                 Some(&projects_id),
                 user_id,
             )
@@ -1208,10 +1249,12 @@ mod tests {
         let py_note_id = db
             .create_note(
                 "python_script",
-                "script",
-                None,
-                "print('hello')",
-                "py",
+                NoteContent {
+                    title: "script",
+                    abstract_text: None,
+                    content: "print('hello')",
+                    syntax: "py",
+                },
                 None,
                 user_id,
             )
@@ -1258,10 +1301,12 @@ mod tests {
         let deep_note_id = db
             .create_note(
                 "deep_note",
-                "deep",
-                None,
-                "Deep content",
-                "md",
+                NoteContent {
+                    title: "deep",
+                    abstract_text: None,
+                    content: "Deep content",
+                    syntax: "md",
+                },
                 current_parent.as_deref(),
                 user_id,
             )
@@ -1310,50 +1355,60 @@ mod tests {
         // Create notes
         db.create_note(
             "readme",
-            "readme",
-            None,
-            "Root readme",
-            "md",
+            NoteContent {
+                title: "readme",
+                abstract_text: None,
+                content: "Root readme",
+                syntax: "md",
+            },
             Some(&root_id),
             user_id,
         )
         .expect("Failed to create root readme");
         db.create_note(
             "notes",
-            "notes",
-            None,
-            "Doc notes",
-            "md",
+            NoteContent {
+                title: "notes",
+                abstract_text: None,
+                content: "Doc notes",
+                syntax: "md",
+            },
             Some(&docs_id),
             user_id,
         )
         .expect("Failed to create docs notes");
         db.create_note(
             "project1",
-            "project1",
-            None,
-            "Project content",
-            "md",
+            NoteContent {
+                title: "project1",
+                abstract_text: None,
+                content: "Project content",
+                syntax: "md",
+            },
             Some(&projects_id),
             user_id,
         )
         .expect("Failed to create project1");
         db.create_note(
             "subproject",
-            "subproject",
-            None,
-            "Sub content",
-            "txt",
+            NoteContent {
+                title: "subproject",
+                abstract_text: None,
+                content: "Sub content",
+                syntax: "txt",
+            },
             Some(&subprojects_id),
             user_id,
         )
         .expect("Failed to create subproject");
         db.create_note(
             "agenda",
-            "agenda",
-            None,
-            "Work agenda",
-            "org",
+            NoteContent {
+                title: "agenda",
+                abstract_text: None,
+                content: "Work agenda",
+                syntax: "org",
+            },
             Some(&work_id),
             user_id,
         )
@@ -1463,20 +1518,24 @@ mod tests {
         // Create notes for each user in their own folders
         db.create_note(
             "note1",
-            "note1",
-            None,
-            "User 1 content",
-            "md",
+            NoteContent {
+                title: "note1",
+                abstract_text: None,
+                content: "User 1 content",
+                syntax: "md",
+            },
             Some(&user1_folder_id),
             user1,
         )
         .expect("Failed to create user1 note");
         db.create_note(
             "note2",
-            "note2",
-            None,
-            "User 2 content",
-            "md",
+            NoteContent {
+                title: "note2",
+                abstract_text: None,
+                content: "User 2 content",
+                syntax: "md",
+            },
             Some(&user2_folder_id),
             user2,
         )
@@ -1529,20 +1588,24 @@ mod tests {
 
         db.create_note(
             "file1",
-            "file1",
-            None,
-            "Content 1",
-            "txt",
+            NoteContent {
+                title: "file1",
+                abstract_text: None,
+                content: "Content 1",
+                syntax: "txt",
+            },
             Some(&folder_id),
             user_id,
         )
         .expect("Failed to create file1");
         db.create_note(
             "file2",
-            "file2",
-            None,
-            "Content 2",
-            "md",
+            NoteContent {
+                title: "file2",
+                abstract_text: None,
+                content: "Content 2",
+                syntax: "md",
+            },
             Some(&folder_id),
             user_id,
         )
@@ -1587,44 +1650,62 @@ mod tests {
         // Create notes in parent folder for different users
         db.create_note(
             "note1",
-            "Note 1",
-            None,
-            "Content 1",
-            "md",
+            NoteContent {
+                title: "Note 1",
+                abstract_text: None,
+                content: "Content 1",
+                syntax: "md",
+            },
             Some(&parent_folder_id),
             user_id,
         )
         .expect("Failed to create note 1");
         db.create_note(
             "note2",
-            "Note 2",
-            None,
-            "Content 2",
-            "txt",
+            NoteContent {
+                title: "Note 2",
+                abstract_text: None,
+                content: "Content 2",
+                syntax: "txt",
+            },
             Some(&parent_folder_id),
             user_id,
         )
         .expect("Failed to create note 2");
         db.create_note(
             "note3",
-            "Note 3",
-            None,
-            "Content 3",
-            "md",
+            NoteContent {
+                title: "Note 3",
+                abstract_text: None,
+                content: "Content 3",
+                syntax: "md",
+            },
             Some(&parent_folder_id),
             other_user,
         )
         .expect("Failed to create note 3 for other user");
 
         // Create notes at root level
-        db.create_note("root1", "Root 1", None, "Root content", "md", None, user_id)
-            .expect("Failed to create root note 1");
+        db.create_note(
+            "root1",
+            NoteContent {
+                title: "Root 1",
+                abstract_text: None,
+                content: "Root content",
+                syntax: "md",
+            },
+            None,
+            user_id,
+        )
+        .expect("Failed to create root note 1");
         db.create_note(
             "root2",
-            "Root 2",
-            None,
-            "Root content",
-            "org",
+            NoteContent {
+                title: "Root 2",
+                abstract_text: None,
+                content: "Root content",
+                syntax: "org",
+            },
             None,
             other_user,
         )
@@ -1680,10 +1761,12 @@ mod tests {
             .expect("Failed to create test folder");
         db.create_note(
             "test_note",
-            "Test",
-            None,
-            "Content",
-            "md",
+            NoteContent {
+                title: "Test",
+                abstract_text: None,
+                content: "Content",
+                syntax: "md",
+            },
             Some(&folder_id),
             user_id,
         )

@@ -20,7 +20,7 @@ use std::ffi::OsStr;
 
 use fuser::{FileAttr, FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
 
-use crate::database::Database;
+use crate::database::{Database, NoteContent};
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -1066,15 +1066,15 @@ impl Filesystem for ExampleFuseFs {
 
         // Create new note in database
         let note_id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
-        let content = "";
-        let abstract_text = Some("");
 
         match self.db.create_note(
             &note_id,
-            &title,
-            abstract_text,
-            content,
-            &syntax,
+            NoteContent {
+                title: &title,
+                abstract_text: Some(""),
+                content: "",
+                syntax: &syntax,
+            },
             parent_folder_id.as_deref(),
             self.user_id.as_str(),
         ) {
@@ -1968,15 +1968,15 @@ impl Filesystem for ExampleFuseFs {
             }
         };
 
-        let content = "";
-        let abstract_text = Some("");
         let id = format!("{:x}", uuid::Uuid::new_v4().as_simple());
         let _id = match self.db.create_note(
             &id,
-            &title,
-            abstract_text,
-            content,
-            &syntax,
+            NoteContent {
+                title: &title,
+                abstract_text: Some(""),
+                content: "",
+                syntax: &syntax,
+            },
             parent_id.as_deref(),
             self.user_id.as_str(),
         ) {
