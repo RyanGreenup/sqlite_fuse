@@ -498,6 +498,7 @@ pub struct Note {
     pub updated_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FileType {
     Directory { path: String },

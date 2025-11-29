@@ -5,7 +5,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const DEBUG: bool = true;
 
 
 use chrono::{DateTime, Utc};
