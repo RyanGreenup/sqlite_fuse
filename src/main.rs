@@ -86,7 +86,7 @@ fn main() {
 
             for user_result in users {
                 if let Ok((user_id, count)) = user_result {
-                    println!("{:<40} {:<15}", user_id, count);
+                    println!("{user_id:<40} {count:<15}");
                 }
             }
 

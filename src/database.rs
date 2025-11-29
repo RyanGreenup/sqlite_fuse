@@ -214,7 +214,7 @@ impl Database {
             .connection
             .prepare("SELECT full_path FROM v_folder_id_path_mapping WHERE id = ?1 AND user_id = ?2")?;
 
-        let mut path_iter = stmt.query_map([id, user_id], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut path_iter = stmt.query_map([id, user_id], |row| row.get::<_, String>(0))?;
 
         match path_iter.next() {
             Some(path) => Ok(Some(path?)),
@@ -227,7 +227,7 @@ impl Database {
             .connection
             .prepare("SELECT id FROM v_folder_id_path_mapping WHERE full_path = ?1 AND user_id = ?2")?;
 
-        let mut id_iter = stmt.query_map([path, user_id], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut id_iter = stmt.query_map([path, user_id], |row| row.get::<_, String>(0))?;
 
         match id_iter.next() {
             Some(id) => Ok(Some(id?)),
@@ -240,7 +240,7 @@ impl Database {
             .connection
             .prepare("SELECT full_path FROM v_note_id_path_mapping WHERE id = ?1")?;
 
-        let mut path_iter = stmt.query_map([id], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut path_iter = stmt.query_map([id], |row| row.get::<_, String>(0))?;
 
         match path_iter.next() {
             Some(path) => Ok(Some(path?)),
@@ -253,7 +253,7 @@ impl Database {
             .connection
             .prepare("SELECT id FROM v_note_id_path_mapping WHERE full_path = ?1")?;
 
-        let mut id_iter = stmt.query_map([path], |row| Ok(row.get::<_, String>(0)?))?;
+        let mut id_iter = stmt.query_map([path], |row| row.get::<_, String>(0))?;
 
         match id_iter.next() {
             Some(id) => Ok(Some(id?)),
@@ -490,7 +490,7 @@ pub enum FileType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono_tz;
+    
     use rusqlite::Connection;
 
     fn setup_test_database() -> Database {
@@ -1234,7 +1234,7 @@ mod tests {
         let mut expected_path = String::new();
 
         for i in 1..=5 {
-            let folder_name = format!("Level{}", i);
+            let folder_name = format!("Level{i}");
             let folder_id = db
                 .create_folder(&folder_name, current_parent.as_deref(), user_id)
                 .expect("Failed to create nested folder");
@@ -1242,7 +1242,7 @@ mod tests {
             if expected_path.is_empty() {
                 expected_path = folder_name.clone();
             } else {
-                expected_path = format!("{}/{}", expected_path, folder_name);
+                expected_path = format!("{expected_path}/{folder_name}");
             }
 
             let resolved_path = db
@@ -1699,7 +1699,7 @@ mod tests {
         let mut current_parent = Some(folder_id.clone());
         for i in 1..=3 {
             let child_id = db
-                .create_folder(&format!("Level{}", i), current_parent.as_deref(), user_id)
+                .create_folder(&format!("Level{i}"), current_parent.as_deref(), user_id)
                 .expect("Failed to create nested folder");
             current_parent = Some(child_id);
         }
