@@ -251,6 +251,13 @@ impl Filesystem for ExampleFuseFs {
         // Normalize path for database queries
         let db_path = Self::normalize_path_for_db(&full_path);
 
+        // Check if it's a system file that shouldn't be exposed
+        if Self::is_system_file(&full_path) {
+            eprintln!("[DEBUG] lookup: Filtering out system file {full_path}");
+            reply.error(ENOENT);
+            return;
+        }
+
         // First, check if it's a folder/directory
         match self.db.get_folder_id_by_path(db_path, self.user_id.as_str()) {
             Ok(Some(folder_id)) => {
